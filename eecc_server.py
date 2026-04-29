@@ -58,11 +58,13 @@ async def generar(
         ]
 
         if eecc_anterior:
-            ext = (eecc_anterior.filename or "prev.pdf").rsplit(".", 1)[-1].lower()
-            prev_path = os.path.join(tmp, f"eecc_anterior.{ext}")
-            with open(prev_path, "wb") as f:
-                f.write(await eecc_anterior.read())
-            cmd += ["--eecc-anterior", prev_path]
+            content = await eecc_anterior.read()
+            if len(content) > 100:  # skip empty/placeholder files
+                ext = (eecc_anterior.filename or "prev.pdf").rsplit(".", 1)[-1].lower()
+                prev_path = os.path.join(tmp, f"eecc_anterior.{ext}")
+                with open(prev_path, "wb") as f:
+                    f.write(content)
+                cmd += ["--eecc-anterior", prev_path]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
         if result.returncode != 0:
