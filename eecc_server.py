@@ -126,7 +126,7 @@ async def generar(
 
 
 def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
-    """Convierte Excel a PDF: una página por solapa, orientación correcta."""
+    """Convierte Excel a PDF: una página por solapa preservando estilos de xlsx2html."""
     from xlsx2html import xlsx2html as x2h
     from weasyprint import HTML
     from openpyxl import load_workbook
@@ -142,29 +142,28 @@ def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
         buf = io.StringIO()
         try:
             x2h(xlsx_path, buf, sheet=sheet_name)
-            content = buf.getvalue()
-            body = re.search(r'<body[^>]*>(.*?)</body>', content, re.DOTALL | re.IGNORECASE)
-            body_html = body.group(1) if body else content
+            full_html = buf.getvalue()
 
             landscape = sheet_name in LANDSCAPE_SHEETS
             pw = '297mm' if landscape else '210mm'
             ph = '210mm' if landscape else '297mm'
 
-            css = f'''
-                @page {{ size: {pw} {ph}; margin: 0.7cm; }}
-                body {{ font-family: Arial, sans-serif; font-size: 6.5pt; margin: 0; }}
-                table {{ border-collapse: collapse; width: 100%; table-layout: auto; }}
-                td, th {{ border: 1px solid #999; padding: 1px 3px;
-                          overflow: hidden; word-wrap: break-word; white-space: normal; }}
-            '''
-            html = (
-                f'<html><head><style>{css}</style></head><body>'
-                f'<p style="font-weight:bold;font-size:8.5pt;margin:0 0 4px">{sheet_name}</p>'
-                f'{body_html}</body></html>'
+            # Inyectar @page y reducir font sin pisar estilos de xlsx2html
+            inject = (
+                f'<style>'
+                f'@page {{ size: {pw} {ph}; margin: 0.7cm; }}'
+                f'body {{ font-size: 6pt !important; }}'
+                f'table {{ width: 100% !important; }}'
+                f'td, th {{ overflow: hidden !important; white-space: normal !important; word-break: break-word !important; }}'
+                f'</style>'
             )
+            if '</head>' in full_html:
+                full_html = full_html.replace('</head>', inject + '</head>')
+            else:
+                full_html = inject + full_html
 
             tmp = tempfile.mktemp(suffix='.pdf')
-            HTML(string=html).write_pdf(tmp)
+            HTML(string=full_html).write_pdf(tmp)
             sheet_pdfs.append(tmp)
         except Exception as e:
             print(f"[XLSX2PDF] {sheet_name}: {e}")
