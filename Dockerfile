@@ -7,12 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxinerama1 \
     libxrandr2 \
     libgl1 \
-    && rm -rf /var/lib/apt/lists/*
-
-# pango/cairo para weasyprint (fallback si libreoffice falla)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpango-1.0-0 libharfbuzz0b libpangoft2-1.0-0 \
-    libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 libcairo2 shared-mime-info \
+    fonts-liberation \
+    fonts-dejavu \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
