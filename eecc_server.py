@@ -127,10 +127,13 @@ async def generar(
 
 def _libreoffice_pdf(input_path: str, out_dir: str, desired_path: str):
     """Convierte cualquier archivo a PDF con LibreOffice headless."""
-    subprocess.run([
-        "libreoffice", "--headless", "--convert-to", "pdf",
-        "--outdir", out_dir, input_path
-    ], capture_output=True, timeout=90)
+    for binary in ["libreoffice", "soffice"]:
+        result = subprocess.run(
+            [binary, "--headless", "--convert-to", "pdf", "--outdir", out_dir, input_path],
+            capture_output=True, timeout=90
+        )
+        if result.returncode == 0:
+            break
     base = os.path.splitext(os.path.basename(input_path))[0]
     generated = os.path.join(out_dir, base + ".pdf")
     if os.path.exists(generated) and generated != desired_path:
