@@ -1,11 +1,13 @@
-FROM python:3.11
+FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y \
-    libreoffice \
-    libreoffice-calc \
-    libreoffice-writer \
-    fonts-liberation \
-    fonts-dejavu \
+    libpango-1.0-0 \
+    libharfbuzz0b \
+    libpangoft2-1.0-0 \
+    libpangocairo-1.0-0 \
+    libgdk-pixbuf-2.0-0 \
+    libcairo2 \
+    shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

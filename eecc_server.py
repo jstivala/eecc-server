@@ -3,7 +3,7 @@
 eecc_server.py — Servidor para generación de EECC
 n8n llama a POST /generar con URLs de archivos y parámetros del cliente.
 """
-import os, subprocess, tempfile, shutil, zipfile, urllib.request
+import os, re, io, subprocess, tempfile, shutil, zipfile, urllib.request
 from pathlib import Path
 from datetime import date, datetime
 from fastapi import FastAPI, Form, HTTPException
@@ -79,15 +79,15 @@ async def generar(
             raise HTTPException(status_code=500, detail="El script no generó el archivo")
 
         empresa_slug = empresa.replace(" ", "_").replace(".", "")[:30]
-        year = fecha_cierre.strip()[:4]
+        year         = fecha_cierre.strip()[:4]
         xlsx_name    = f"EECC_{empresa_slug}_{year}.xlsx"
         pdf_name     = f"EECC_{empresa_slug}_{year}.pdf"
         excel_pdf    = os.path.join(tmp, "excel.pdf")
         informe_pdf  = os.path.join(tmp, "informe.pdf")
         merged_pdf   = os.path.join(tmp, pdf_name)
 
-        # 1. Excel → PDF (todas las solapas incluida Notas)
-        _libreoffice_pdf(out_path, tmp, excel_pdf)
+        # 1. Excel → PDF
+        _xlsx_to_pdf(out_path, excel_pdf)
 
         # 2. Informe Word → rellenar → PDF
         if INFORME_TEMPLATE.exists():
@@ -95,13 +95,13 @@ async def generar(
             _fill_informe(str(INFORME_TEMPLATE), informe_filled,
                           empresa, cuit, domicilio, matricula_igj,
                           fecha_cierre.strip(), sipa_monto)
-            _libreoffice_pdf(informe_filled, tmp, informe_pdf)
+            _docx_to_pdf(informe_filled, informe_pdf)
 
         # 3. Mergear PDFs
         _merge_pdfs([excel_pdf, informe_pdf], merged_pdf)
 
         # 4. ZIP con xlsx + pdf
-        zip_path  = os.path.join(tmp, "eecc.zip")
+        zip_path = os.path.join(tmp, "eecc.zip")
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.write(out_path, xlsx_name)
             if os.path.exists(merged_pdf):
@@ -125,19 +125,57 @@ async def generar(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _libreoffice_pdf(input_path: str, out_dir: str, desired_path: str):
-    """Convierte cualquier archivo a PDF con LibreOffice headless."""
-    for binary in ["libreoffice", "soffice"]:
-        result = subprocess.run(
-            [binary, "--headless", "--convert-to", "pdf", "--outdir", out_dir, input_path],
-            capture_output=True, timeout=90
-        )
-        if result.returncode == 0:
-            break
-    base = os.path.splitext(os.path.basename(input_path))[0]
-    generated = os.path.join(out_dir, base + ".pdf")
-    if os.path.exists(generated) and generated != desired_path:
-        os.rename(generated, desired_path)
+def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
+    """Convierte Excel a PDF usando xlsx2html + weasyprint."""
+    from xlsx2html import xlsx2html as x2h
+    from weasyprint import HTML
+    from openpyxl import load_workbook
+
+    wb = load_workbook(xlsx_path)
+    html_parts = []
+
+    for sheet_name in wb.sheetnames:
+        buf = io.StringIO()
+        try:
+            x2h(xlsx_path, buf, sheet=sheet_name)
+            content = buf.getvalue()
+            body = re.search(r'<body[^>]*>(.*?)</body>', content, re.DOTALL | re.IGNORECASE)
+            body_html = body.group(1) if body else content
+            pb = 'page-break-before: always;' if html_parts else ''
+            html_parts.append(
+                f'<div style="{pb} padding: 8px;">'
+                f'<p style="font-weight:bold;font-size:11pt;margin:0 0 4px">{sheet_name}</p>'
+                f'{body_html}</div>'
+            )
+        except Exception:
+            pass
+
+    css = '''
+        @page { size: A4 landscape; margin: 1cm; }
+        body { font-family: Arial, sans-serif; font-size: 8pt; }
+        table { border-collapse: collapse; width: 100%; }
+        td, th { border: 1px solid #aaa; padding: 2px 4px; white-space: nowrap; }
+    '''
+    full_html = f'<html><head><style>{css}</style></head><body>{"".join(html_parts)}</body></html>'
+    HTML(string=full_html).write_pdf(pdf_path)
+
+
+def _docx_to_pdf(docx_path: str, pdf_path: str):
+    """Convierte DOCX a PDF usando mammoth + weasyprint."""
+    import mammoth
+    from weasyprint import HTML
+
+    with open(docx_path, 'rb') as f:
+        result = mammoth.convert_to_html(f)
+
+    css = '''
+        @page { size: A4; margin: 2cm; }
+        body { font-family: Arial, sans-serif; font-size: 11pt; line-height: 1.4; }
+        img { max-width: 100%; }
+        p { margin: 0.4em 0; }
+    '''
+    html = f'<html><head><style>{css}</style></head><body>{result.value}</body></html>'
+    HTML(string=html).write_pdf(pdf_path)
 
 
 def _fill_informe(template_path: str, out_path: str,
@@ -157,8 +195,8 @@ def _fill_informe(template_path: str, out_path: str,
         "{{EMPRESA}}.": f"{empresa}.",
         "{{EMPRESA}}":  empresa,
         "{{CUIT}}":     cuit,
-        "{{DOMICILIO}}":     domicilio or "[DOMICILIO]",
-        "{{MATRICULA_IGJ}}": matricula_igj or "[MATRÍCULA]",
+        "{{DOMICILIO}}":          domicilio or "[DOMICILIO]",
+        "{{MATRICULA_IGJ}}":      matricula_igj or "[MATRÍCULA]",
         "{{FECHA_CIERRE_LARGA}}": fecha_larga,
         "{{MES_ANIO_CIERRE}}":    mes_anio,
         "{{SIPA_MONTO}}":         sipa_fmt,
