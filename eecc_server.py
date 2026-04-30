@@ -23,11 +23,19 @@ MONTHS_ES = {
 
 @app.get("/health")
 def health():
+    import shutil, subprocess as sp
+    lo = shutil.which("libreoffice") or shutil.which("soffice") or "NOT FOUND"
+    try:
+        ver = sp.run([lo, "--version"], capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception as e:
+        ver = str(e)
     return {
         "status": "ok",
         "script": str(GEN_SCRIPT),
-        "exists": GEN_SCRIPT.exists(),
-        "template": INFORME_TEMPLATE.exists()
+        "script_exists": GEN_SCRIPT.exists(),
+        "template_exists": INFORME_TEMPLATE.exists(),
+        "libreoffice_path": lo,
+        "libreoffice_version": ver,
     }
 
 
@@ -87,7 +95,11 @@ async def generar(
         merged_pdf   = os.path.join(tmp, pdf_name)
 
         # 1. Excel → PDF
-        _xlsx_to_pdf(out_path, excel_pdf)
+        lo = _find_libreoffice()
+        if lo:
+            _libreoffice_convert(lo, out_path, tmp, excel_pdf)
+        else:
+            _xlsx_to_pdf(out_path, excel_pdf)
 
         # 2. Informe Word → rellenar → PDF
         if INFORME_TEMPLATE.exists():
@@ -95,7 +107,10 @@ async def generar(
             _fill_informe(str(INFORME_TEMPLATE), informe_filled,
                           empresa, cuit, domicilio, matricula_igj,
                           fecha_cierre.strip(), sipa_monto)
-            _docx_to_pdf(informe_filled, informe_pdf)
+            if lo:
+                _libreoffice_convert(lo, informe_filled, tmp, informe_pdf)
+            else:
+                _docx_to_pdf(informe_filled, informe_pdf)
 
         # 3. Mergear PDFs
         _merge_pdfs([excel_pdf, informe_pdf], merged_pdf)
@@ -123,6 +138,26 @@ async def generar(
     except Exception as e:
         shutil.rmtree(tmp, ignore_errors=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _find_libreoffice():
+    import shutil
+    return shutil.which("libreoffice") or shutil.which("soffice")
+
+
+def _libreoffice_convert(lo_bin: str, input_path: str, out_dir: str, desired_path: str):
+    """Convierte un archivo a PDF con LibreOffice headless."""
+    env = os.environ.copy()
+    env["HOME"] = out_dir  # evita conflictos de perfil de usuario
+    subprocess.run(
+        [lo_bin, "--headless", "--norestore", "--convert-to", "pdf",
+         "--outdir", out_dir, input_path],
+        capture_output=True, timeout=120, env=env
+    )
+    base = os.path.splitext(os.path.basename(input_path))[0]
+    generated = os.path.join(out_dir, base + ".pdf")
+    if os.path.exists(generated) and generated != desired_path:
+        os.rename(generated, desired_path)
 
 
 def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
