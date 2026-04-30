@@ -8,3 +8,4 @@ pypdf==4.3.1
 xlsx2html
 weasyprint
 mammoth
+cloudconvert

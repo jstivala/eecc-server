@@ -95,8 +95,11 @@ async def generar(
         merged_pdf   = os.path.join(tmp, pdf_name)
 
         # 1. Excel → PDF
+        cc_key = os.environ.get("CLOUDCONVERT_API_KEY", "")
         lo = _find_libreoffice()
-        if lo:
+        if cc_key:
+            _cloudconvert_pdf(cc_key, out_path, excel_pdf)
+        elif lo:
             _libreoffice_convert(lo, out_path, tmp, excel_pdf)
         else:
             _xlsx_to_pdf(out_path, excel_pdf)
@@ -138,6 +141,29 @@ async def generar(
     except Exception as e:
         shutil.rmtree(tmp, ignore_errors=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _cloudconvert_pdf(api_key: str, input_path: str, output_path: str):
+    """Convierte a PDF via CloudConvert API (usa LibreOffice internamente)."""
+    import cloudconvert
+    cloudconvert.configure(api_key=api_key, sandbox=False)
+
+    job = cloudconvert.Job.create(payload={
+        "tasks": {
+            "upload":  {"operation": "import/upload"},
+            "convert": {"operation": "convert", "input": "upload",
+                        "output_format": "pdf", "engine": "libreoffice"},
+            "export":  {"operation": "export/url", "input": "convert"}
+        }
+    })
+
+    upload_task = next(t for t in job["tasks"] if t["name"] == "upload")
+    cloudconvert.Task.upload(file_name=input_path, task=upload_task)
+
+    job = cloudconvert.Job.wait(id=job["id"])
+    export_task = next(t for t in job["tasks"] if t["name"] == "export")
+    url = export_task["result"]["files"][0]["url"]
+    urllib.request.urlretrieve(url, output_path)
 
 
 def _find_libreoffice():
