@@ -49,7 +49,7 @@ NRO_EJ     = args.nro_ejercicio
 cap_nominal = args.cap_nominal
 SOCIO      = args.socio
 
-fecha_cie  = datetime.strptime(args.fecha_cierre, "%Y-%m-%d")
+fecha_cie  = datetime.strptime(args.fecha_cierre.strip(), "%Y-%m-%d")
 fecha_ant  = fecha_cie.replace(year=fecha_cie.year - 1)
 EJ25       = fecha_cie.strftime("%d/%m/%Y")
 EJ24       = fecha_ant.strftime("%d/%m/%Y")
