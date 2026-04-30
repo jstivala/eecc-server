@@ -241,21 +241,57 @@ def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
 
 
 def _docx_to_pdf(docx_path: str, pdf_path: str):
-    """Convierte DOCX a PDF usando mammoth + weasyprint."""
-    import mammoth
+    """Convierte DOCX a PDF preservando alineación e imágenes."""
+    import base64
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
     from weasyprint import HTML
 
-    with open(docx_path, 'rb') as f:
-        result = mammoth.convert_to_html(f)
+    doc = Document(docx_path)
+    NS_DRAW = '{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}'
+    NS_A    = '{http://schemas.openxmlformats.org/drawingml/2006/main}'
+    NS_R    = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+
+    def _para_html(para):
+        align_map = {
+            WD_ALIGN_PARAGRAPH.RIGHT:   'right',
+            WD_ALIGN_PARAGRAPH.CENTER:  'center',
+            WD_ALIGN_PARAGRAPH.JUSTIFY: 'justify',
+            WD_ALIGN_PARAGRAPH.LEFT:    'left',
+        }
+        align = align_map.get(para.alignment, 'justify')
+        parts = []
+        for run in para.runs:
+            inline = run._element.find(f'.//{NS_DRAW}inline')
+            if inline is not None:
+                blip = run._element.find(f'.//{NS_A}blip')
+                if blip is not None:
+                    rId = blip.get(f'{{{NS_R}}}embed')
+                    if rId:
+                        img_part = doc.part.related_parts[rId]
+                        b64 = base64.b64encode(img_part.blob).decode()
+                        mime = img_part.content_type
+                        parts.append(f'<img src="data:{mime};base64,{b64}" style="width:7.1cm;" />')
+            else:
+                text = run.text.replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+                if not text:
+                    continue
+                s = ''
+                if run.bold:    s += 'font-weight:bold;'
+                if run.italic:  s += 'font-style:italic;'
+                if run.underline: s += 'text-decoration:underline;'
+                parts.append(f'<span style="{s}">{text}</span>' if s else text)
+        content = ''.join(parts) if parts else '&nbsp;'
+        return f'<p style="text-align:{align};margin:0.25em 0">{content}</p>'
+
+    html_parts = [_para_html(p) for p in doc.paragraphs]
 
     css = '''
-        @page { size: A4; margin: 2cm; }
-        body { font-family: Arial, sans-serif; font-size: 11pt; line-height: 1.4; }
-        img { max-width: 100%; }
-        p { margin: 0.4em 0; }
+        @page { size: A4; margin: 2.5cm 2cm; }
+        body { font-family: Arial, sans-serif; font-size: 11pt; line-height: 1.5; }
     '''
-    html = f'<html><head><style>{css}</style></head><body>{result.value}</body></html>'
-    HTML(string=html).write_pdf(pdf_path)
+    full_html = f'<html><head><style>{css}</style></head><body>{"".join(html_parts)}</body></html>'
+    HTML(string=full_html).write_pdf(pdf_path)
 
 
 def _fill_informe(template_path: str, out_path: str,
