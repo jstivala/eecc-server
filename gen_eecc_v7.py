@@ -49,7 +49,7 @@ NRO_EJ     = args.nro_ejercicio
 cap_nominal = args.cap_nominal
 SOCIO      = args.socio
 
-fecha_cie  = datetime.strptime(args.fecha_cierre.strip(), "%Y-%m-%d")
+fecha_cie  = datetime.strptime(args.fecha_cierre, "%Y-%m-%d")
 fecha_ant  = fecha_cie.replace(year=fecha_cie.year - 1)
 EJ25       = fecha_cie.strftime("%d/%m/%Y")
 EJ24       = fecha_ant.strftime("%d/%m/%Y")
@@ -67,6 +67,7 @@ def read_ss(path):
     ws = wb.active
     rubros  = {}   # rubro  → saldo acumulado
     cuentas = {}   # cuenta → saldo
+    rows_raw = []  # filas originales en orden: (rubro, cuenta, saldo)
 
     for row in ws.iter_rows(min_row=2, values_only=True):
         if not row or row[0] is None:
@@ -75,28 +76,29 @@ def read_ss(path):
         if cuenta is None or saldo is None:
             continue
         saldo = float(saldo)
-        rubro_key = str(rubro).strip()
-        cuenta_key = str(cuenta).strip()
+        rubro_key = str(rubro).strip().lower()
+        cuenta_key = str(cuenta).strip().lower()
         rubros[rubro_key] = rubros.get(rubro_key, 0.0) + saldo
         cuentas[cuenta_key] = saldo
+        rows_raw.append((str(rubro).strip(), str(cuenta).strip(), saldo))
 
     def gc(*names):
         for n in names:
-            if n in cuentas:
-                return abs(cuentas[n])
+            if n.lower() in cuentas:
+                return abs(cuentas[n.lower()])
         return 0.0
 
     def gr(*names):
         for n in names:
-            if n in rubros:
-                return abs(rubros[n])
+            if n.lower() in rubros:
+                return abs(rubros[n.lower()])
         return 0.0
 
     # ── Activo ───────────────────────────────────────────────────────────────
     caja_banco = gc("Banco Santander Río en $", "Banco Galicia en $", "Banco en $")
     caja_caja  = gc("Caja")
     caja       = gr("Caja y Bancos")
-    cv         = gr("Creditos Por ventas", "Créditos por ventas")
+    cv         = gr("Créditos por Ventas", "Créditos por ventas", "Creditos por ventas")
     oc_iva     = gc("IVA Saldo Técnico")
     oc_sld     = gc("Saldo Libre Disponibilidad")
     oc_dbc     = gc("Impuesto a los Db y Cr", "Impuesto a los Débitos y Créditos")
@@ -147,6 +149,7 @@ def read_ss(path):
         "gcom_bsas": gcom_bsas, "gcom_caba": gcom_caba, "gcom_mdz": gcom_mdz, "gcom": gcom,
         "gadm_suel": gadm_suel, "gadm_cs": gadm_cs, "gadm_banc": gadm_banc, "gadm_adm": gadm_adm,
         "recpam": recpam, "ig": ig,
+        "_rows": rows_raw,
     }
 
 
@@ -1039,6 +1042,134 @@ ejercicio de $ {abs(res25_adj):,.2f}, que refleja el nivel de gastos operativos 
 incurridos durante el período.""", h=90)
 
 # ═══════════════════════════════════════════════════════════════════════════
+# SS HOMOGÉNEO — Sumas y Saldos en moneda homogénea (RT6)
+# ═══════════════════════════════════════════════════════════════════════════
+ws = wb.create_sheet("SS Homogéneo")
+
+AZUL_C2 = "BDD7EE"
+AMAN2   = "FFF2CC"
+VERDE2  = "E2EFDA"
+
+# Título
+ws.merge_cells("A1:E1")
+t = ws.cell(row=1, column=1,
+    value=f"{EMPRESA}\nBALANCE DE SUMAS Y SALDOS EN MONEDA HOMOGÉNEA\nAl {EJ25} — pesos de poder adquisitivo al {EJ25}")
+t.font      = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+t.fill      = PatternFill(fill_type="solid", fgColor=C_HDR)
+t.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+ws.row_dimensions[1].height = 55
+
+# Encabezados
+for c, txt in enumerate(["Rubro", "Cuenta", "Saldo Nominal", "Ajuste RT6", "Saldo Homogéneo"], 1):
+    cell = ws.cell(row=2, column=c, value=txt)
+    cell.font      = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    cell.fill      = PatternFill(fill_type="solid", fgColor=C_HDR)
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    cell.border    = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
+
+ws.column_dimensions["A"].width = 28
+ws.column_dimensions["B"].width = 36
+ws.column_dimensions["C"].width = 18
+ws.column_dimensions["D"].width = 18
+ws.column_dimensions["E"].width = 18
+ws.row_dimensions[2].height = 18
+
+# Mapa de sustituciones (cuenta en minúsculas → valor homogéneo con signo SS)
+# Signo SS: activo=positivo, pasivo/PN crédito=negativo, ingreso=negativo, gasto/pérdida=positivo
+SSH_ADJ = {
+    "ajuste de capital":      -aj24_eepn,           # más crédito (reexpresión)
+    "resultado no asignado":  -rna_inicio_rx,        # = 1,250,033.36 (pérdida anterior reexpresada)
+    "rna":                    -rna_inicio_rx,
+    "recpam":                 -recpam25_adj,          # incluye ajuste de apertura RT6
+}
+
+raw_rows = ss.get("_rows", [])
+
+r = 3
+rubro_prev = None
+
+def _ssh_cell(ws, row, col, val, bold=False, bg=None, num=False):
+    cell = ws.cell(row=row, column=col, value=val)
+    cell.font      = Font(name="Calibri", size=10, bold=bold)
+    cell.border    = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
+    cell.alignment = Alignment(horizontal="right" if num else "left", vertical="center")
+    if bg:
+        cell.fill = PatternFill(fill_type="solid", fgColor=bg)
+    if num and val is not None:
+        cell.number_format = '#,##0.00;[Red]-#,##0.00'
+    return cell
+
+for rubro, cuenta, saldo_nom in raw_rows:
+    cuenta_key = cuenta.lower()
+
+    if cuenta_key in SSH_ADJ:
+        saldo_hom = SSH_ADJ[cuenta_key]
+        ajuste    = round(saldo_hom - saldo_nom, 2)
+        bg_row    = AMAN2
+    else:
+        saldo_hom = saldo_nom
+        ajuste    = None
+        bg_row    = None
+
+    # Separador de rubro
+    if rubro != rubro_prev:
+        ws.merge_cells(f"A{r}:E{r}")
+        cell = ws.cell(row=r, column=1, value=rubro)
+        cell.font      = Font(name="Calibri", size=10, bold=True)
+        cell.fill      = PatternFill(fill_type="solid", fgColor=AZUL_C2)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+        cell.border    = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
+        ws.row_dimensions[r].height = 15
+        r += 1
+        rubro_prev = rubro
+
+    _ssh_cell(ws, r, 1, None,      bg=bg_row)        # rubro (vacío, ya en separador)
+    _ssh_cell(ws, r, 2, cuenta,    bg=bg_row)
+    _ssh_cell(ws, r, 3, saldo_nom, bg=bg_row, num=True)
+    _ssh_cell(ws, r, 4, ajuste,    bg=bg_row, num=True)
+    _ssh_cell(ws, r, 5, round(saldo_hom, 2), bg=bg_row, num=True)
+    ws.row_dimensions[r].height = 15
+    r += 1
+
+# Totales
+total_nom = round(sum(s for _, _, s in raw_rows), 2)
+total_hom = round(sum(
+    SSH_ADJ.get(c.lower(), s) for _, c, s in raw_rows
+), 2)
+total_adj = round(total_hom - total_nom, 2)
+
+ws.merge_cells(f"A{r}:B{r}")
+for c, val in enumerate(["TOTAL", None, total_nom, total_adj, total_hom], 1):
+    cell = ws.cell(row=r, column=c, value=val if c != 1 else "TOTAL")
+    cell.font      = Font(name="Calibri", size=10, bold=True)
+    cell.fill      = PatternFill(fill_type="solid", fgColor=VERDE2)
+    cell.border    = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
+    if c >= 3 and val is not None:
+        cell.number_format = '#,##0.00;[Red]-#,##0.00'
+        cell.alignment = Alignment(horizontal="right", vertical="center")
+ws.row_dimensions[r].height = 16
+r += 1
+
+# Verificación
+verif_val = f"✓ Balance: {total_hom:,.2f}" if abs(total_hom) < 1 else f"⚠ Diferencia: {total_hom:,.2f}"
+cell = ws.cell(row=r, column=5, value=verif_val)
+cell.font      = Font(name="Calibri", size=9, italic=True, bold=True,
+                      color="375623" if abs(total_hom) < 1 else "FF0000")
+cell.alignment = Alignment(horizontal="right")
+r += 1
+
+# Nota explicativa
+ws.merge_cells(f"A{r}:E{r}")
+nota = ws.cell(row=r, column=1,
+    value=("Nota RT6: Se reemplazaron tres valores respecto del SS nominal: "
+           "(1) Ajuste de Capital → reexpresado × COF; "
+           "(2) RNA → resultado del ejercicio anterior reexpresado × COF; "
+           f"(3) RECPAM → incluye ajuste de apertura de ${recpam_rx_aper:,.2f} por consistencia de PN apertura/cierre."))
+nota.font      = Font(name="Calibri", size=9, italic=True)
+nota.alignment = Alignment(horizontal="left", wrap_text=True)
+ws.row_dimensions[r].height = 35
+
+# ═══════════════════════════════════════════════════════════════════════════
 # PAGE SETUP
 # ═══════════════════════════════════════════════════════════════════════════
 from openpyxl.worksheet.page import PageMargins
@@ -1064,6 +1195,7 @@ page_setup(wb["Anexo I"], landscape=True)
 page_setup(wb["Anexo II"])
 page_setup(wb["Anexo III"], landscape=True)
 page_setup(wb["Notas"])
+page_setup(wb["SS Homogéneo"])
 
 # ═══════════════════════════════════════════════════════════════════════════
 # GUARDAR
