@@ -87,9 +87,10 @@ async def generar(
             raise HTTPException(status_code=500, detail="El script no generó el archivo")
 
         empresa_slug = empresa.replace(" ", "_").replace(".", "")[:30]
+        cuit_slug    = cuit.replace("-", "").replace(" ", "")
         year         = fecha_cierre.strip()[:4]
-        xlsx_name    = f"EECC_{empresa_slug}_{year}.xlsx"
-        pdf_name     = f"EECC_{empresa_slug}_{year}.pdf"
+        xlsx_name    = f"EECC_{cuit_slug}_{year}.xlsx"
+        pdf_name     = f"EECC_{cuit_slug}_{year}.pdf"
         excel_pdf    = os.path.join(tmp, "excel.pdf")
         informe_pdf  = os.path.join(tmp, "informe.pdf")
         merged_pdf   = os.path.join(tmp, pdf_name)
