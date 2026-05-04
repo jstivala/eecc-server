@@ -99,7 +99,14 @@ async def generar(
         cc_key = os.environ.get("CLOUDCONVERT_API_KEY", "")
         lo = _find_libreoffice()
         if cc_key:
-            _cloudconvert_pdf(cc_key, out_path, excel_pdf)
+            try:
+                _cloudconvert_pdf(cc_key, out_path, excel_pdf)
+            except Exception as cc_err:
+                print(f"[CloudConvert] falló ({cc_err}), usando fallback")
+                if lo:
+                    _libreoffice_convert(lo, out_path, tmp, excel_pdf)
+                else:
+                    _xlsx_to_pdf(out_path, excel_pdf)
         elif lo:
             _libreoffice_convert(lo, out_path, tmp, excel_pdf)
         else:
