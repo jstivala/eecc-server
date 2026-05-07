@@ -123,30 +123,9 @@ async def generar(
             else:
                 _docx_to_pdf(informe_filled, informe_pdf)
 
-        # 2b. Notas contables → docx → PDF
-        notas_pdf = os.path.join(tmp, "notas.pdf")
-        notes_json_path = os.path.join(tmp, "notes_data.json")
-        if os.path.exists(notes_json_path):
-            try:
-                import json as _json
-                with open(notes_json_path, "r", encoding="utf-8") as _f:
-                    notes = _json.load(_f)
-                notas_docx = os.path.join(tmp, "notas.docx")
-                _generate_notas_docx(notes, notas_docx, fecha_cierre.strip())
-                if lo:
-                    _libreoffice_convert(lo, notas_docx, tmp, notas_pdf)
-                else:
-                    _docx_to_pdf(notas_docx, notas_pdf)
-            except Exception as notas_err:
-                print(f"[NOTAS] Error generando notas.docx: {notas_err}")
-                notas_pdf = None
-        else:
-            notas_pdf = None
-
         # 3. Mergear PDFs
+        # Las notas ya están en la hoja "Notas" del Excel — no se genera notas.pdf separado
         pdfs_to_merge = [excel_pdf]
-        if notas_pdf and os.path.exists(notas_pdf):
-            pdfs_to_merge.append(notas_pdf)
         if os.path.exists(informe_pdf):
             pdfs_to_merge.append(informe_pdf)
         _merge_pdfs(pdfs_to_merge, merged_pdf)
@@ -229,8 +208,9 @@ def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
     import tempfile
 
     LANDSCAPE_SHEETS = {'EEPN', 'Anexo I', 'Anexo III'}
-    MULTIPAGE_OK     = {'Notas'}   # solapas que pueden tener varias páginas
-    MARGIN_CM        = 0.5         # margen en cm para hojas financieras
+    MULTIPAGE_OK     = {'Notas'}        # solapas que pueden tener varias páginas
+    SKIP_PDF_SHEETS  = {'SS Homogéneo'} # solo en Excel, no en PDF
+    MARGIN_CM        = 0.5              # margen en cm para hojas financieras
 
     def _sheet_scale(ws, landscape):
         """Calcula el factor de zoom para que la hoja entre en 1 página A4."""
@@ -266,6 +246,9 @@ def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
     sheet_pdfs = []
 
     for sheet_name in wb.sheetnames:
+        if sheet_name in SKIP_PDF_SHEETS:
+            print(f"[XLSX2PDF] {sheet_name}: skipped (solo Excel)")
+            continue
         buf = io.StringIO()
         try:
             x2h(xlsx_path, buf, sheet=sheet_name)
