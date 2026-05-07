@@ -228,6 +228,7 @@ def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
     import tempfile
 
     LANDSCAPE_SHEETS = {'EEPN', 'Anexo I', 'Anexo III'}
+    MULTIPAGE_OK     = {'Notas'}   # solapas que pueden tener varias páginas
 
     wb = load_workbook(xlsx_path)
     sheet_pdfs = []
@@ -238,19 +239,38 @@ def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
             x2h(xlsx_path, buf, sheet=sheet_name)
             full_html = buf.getvalue()
 
-            landscape = sheet_name in LANDSCAPE_SHEETS
+            landscape  = sheet_name in LANDSCAPE_SHEETS
+            multipage  = sheet_name in MULTIPAGE_OK
             pw = '297mm' if landscape else '210mm'
             ph = '210mm' if landscape else '297mm'
 
-            # Inyectar @page y reducir font sin pisar estilos de xlsx2html
-            inject = (
-                f'<style>'
-                f'@page {{ size: {pw} {ph}; margin: 0.7cm; }}'
-                f'body {{ font-size: 6pt !important; }}'
-                f'table {{ width: 100% !important; }}'
-                f'td, th {{ overflow: hidden !important; white-space: normal !important; word-break: break-word !important; }}'
-                f'</style>'
-            )
+            ws_sheet   = wb[sheet_name]
+            nrows      = ws_sheet.max_row or 30
+
+            if multipage:
+                # Notas: texto largo, permitir multi-página con fuente normal
+                inject = (
+                    f'<style>'
+                    f'@page {{ size: {pw} {ph}; margin: 0.7cm; }}'
+                    f'body {{ font-size: 7pt !important; }}'
+                    f'table {{ width: 100% !important; }}'
+                    f'td, th {{ overflow: hidden !important; white-space: normal !important; word-break: break-word !important; }}'
+                    f'</style>'
+                )
+            else:
+                # Solapas financieras: ajustar fuente dinámicamente para caber en 1 página
+                max_rows_1page = 180 if landscape else 250
+                font_pt = max(4.0, min(6.5, max_rows_1page / max(nrows, 1)))
+                inject = (
+                    f'<style>'
+                    f'@page {{ size: {pw} {ph}; margin: 0.5cm; }}'
+                    f'html, body {{ font-size: {font_pt:.1f}pt !important; margin: 0; padding: 0; }}'
+                    f'table {{ width: 100% !important; border-collapse: collapse !important; }}'
+                    f'td, th {{ overflow: hidden !important; white-space: nowrap !important; '
+                    f'padding: 0 2px !important; line-height: 1.25 !important; }}'
+                    f'</style>'
+                )
+
             if '</head>' in full_html:
                 full_html = full_html.replace('</head>', inject + '</head>')
             else:
