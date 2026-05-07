@@ -657,17 +657,17 @@ r = title_block(ws, EMPRESA,
 r = col_headers(ws, r, ["CONCEPTO", EJ25, f"{EJ24} (reexpresado)"])
 
 # VARIACIÓN NETA
-r = hdr_section(ws, r, "VARIACIÓN NETA DEL EFECTIVO", ncols=3)
-r = detail(ws, r, "Efectivo al inicio del ejercicio",         ef_ini25, ef_ini24, indent=0)
+r = hdr_section(ws, r, "VARIACIÓN NETA DEL EFECTIVO Y SUS EQUIVALENTES", ncols=3)
+r = detail(ws, r, "Efectivo y sus equivalentes al inicio del ejercicio",         ef_ini25, ef_ini24, indent=0)
 r = detail(ws, r, "Modificación de ejercicios anteriores",    None,     None,     indent=0)
-r = detail(ws, r, "Efectivo modificado al inicio",            ef_ini25, ef_ini24, indent=0)
-r = detail(ws, r, "Efectivo al cierre del ejercicio",         ef_cie25, ef_cie24, indent=0)
-r = total(ws,  r, "Aumento (disminución) neto del efectivo",  ef_var25, ef_var24)
+r = detail(ws, r, "Efectivo y sus equivalentes modificado al inicio",            ef_ini25, ef_ini24, indent=0)
+r = detail(ws, r, "Efectivo y sus equivalentes al cierre del ejercicio",         ef_cie25, ef_cie24, indent=0)
+r = total(ws,  r, "Aumento (disminución) neto del efectivo y sus equivalentes",  ef_var25, ef_var24)
 
 r = blank(ws, r)
 
 # ACTIVIDADES OPERATIVAS
-r = hdr_section(ws, r, "CAUSAS DE LAS VARIACIONES DEL EFECTIVO", ncols=3)
+r = hdr_section(ws, r, "CAUSAS DE LAS VARIACIONES DEL EFECTIVO Y SUS EQUIVALENTES", ncols=3)
 r = hdr_section(ws, r, "ACTIVIDADES OPERATIVAS", ncols=3)
 
 r = detail(ws, r, "Ganancia (Pérdida) ordinaria del ejercicio",   res25_adj,     ef24_res,     indent=0)
@@ -682,24 +682,24 @@ r = detail(ws, r, "  Aumento (Disminución) en remuneraciones",         vrem25, 
 r = detail(ws, r, "  Aumento (Disminución) en deudas sociales",        vds25,      None)
 r = detail(ws, r, "  Pagos de impuestos",                              None,       ef24_imp)
 r = detail(ws, r, "  Diferencia por reexpresión monetaria (RT6)",      dif_rx25,   None)
-r = total(ws,  r, "Flujo neto de efectivo — actividades operativas",   fne_op25,   fne_op24)
+r = total(ws,  r, "Flujo neto de efectivo y sus equivalentes — actividades operativas",   fne_op25,   fne_op24)
 
 r = blank(ws, r)
 
 # ACTIVIDADES DE INVERSIÓN
 r = hdr_section(ws, r, "ACTIVIDADES DE INVERSIÓN", ncols=3)
 r = detail(ws, r, "Pagos por compras de bienes de uso",                None,       None, indent=0)
-r = total(ws,  r, "Flujo neto de efectivo — actividades de inversión", 0.0,        0.0)
+r = total(ws,  r, "Flujo neto de efectivo y sus equivalentes — actividades de inversión", 0.0,        0.0)
 
 r = blank(ws, r)
 
 # ACTIVIDADES DE FINANCIACIÓN
 r = hdr_section(ws, r, "ACTIVIDADES DE FINANCIACIÓN", ncols=3)
-r = detail(ws, r, "Cobros de aportes de capital en efectivo",          None,       rx(r24_fne_fin), indent=0)
-r = total(ws,  r, "Flujo neto de efectivo — actividades de financiación", 0.0,    fne_fin24)
+r = detail(ws, r, "Cobros de aportes de capital en efectivo y sus equivalentes",          None,       rx(r24_fne_fin), indent=0)
+r = total(ws,  r, "Flujo neto de efectivo y sus equivalentes — actividades de financiación", 0.0,    fne_fin24)
 
 r = blank(ws, r)
-r = total(ws,  r, "Aumento (Disminución) neto del efectivo",           ef_var25,   ef_var24, bg=C_HDR)
+r = total(ws,  r, "Aumento (Disminución) neto del efectivo y sus equivalentes",           ef_var25,   ef_var24, bg=C_HDR)
 ws.cell(r-1, 1).font = fw(bold=True, color="FFFFFF")
 ws.cell(r-1, 2).font = fw(bold=True, color="FFFFFF")
 ws.cell(r-1, 3).font = fw(bold=True, color="FFFFFF")
