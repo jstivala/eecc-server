@@ -12,7 +12,7 @@ import uvicorn
 
 app = FastAPI(title="EECC Generator")
 
-GEN_SCRIPT       = Path(__file__).parent / "gen_eecc_v8.py"
+GEN_SCRIPT       = Path(__file__).parent / "gen_eecc_v4.py"
 INFORME_TEMPLATE = Path(__file__).parent / "informe_template.docx"
 
 MONTHS_ES = {
