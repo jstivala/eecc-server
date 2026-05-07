@@ -3,6 +3,7 @@ EECC 2025 - ACEROS SUDAMERICANOS SRL
 Formato RT6/RT9/RT17 - moneda homogénea
 Comparativo 2024 × COF 1,2870
 """
+import sys, json, os
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -1029,6 +1030,67 @@ page_setup(wb["Notas"],          landscape=False, fit_w=1, fit_h=0)
 # ════════════════════════════════════════════════════════════════════════════
 # GUARDAR
 # ════════════════════════════════════════════════════════════════════════════
-OUT = "/Users/jstivala/Downloads/EECC_AcerosSudamericanos_2025_v4.xlsx"
+_DEFAULT_OUT = "/Users/jstivala/Downloads/EECC_AcerosSudamericanos_2025_v4.xlsx"
+
+# Leer --output de argv si está presente
+_out_arg = _DEFAULT_OUT
+_argv = sys.argv[1:]
+if "--output" in _argv:
+    _idx = _argv.index("--output")
+    if _idx + 1 < len(_argv):
+        _out_arg = _argv[_idx + 1]
+
+OUT = _out_arg
+
+# Generar notes_data.json en el mismo directorio que el xlsx
+notes_data = {
+    "empresa": EMPRESA,
+    "cuit": CUIT,
+    "ej25": EJ25,
+    "ej24": EJ24,
+    "cof": COF,
+    # 2025
+    "caja25_caja": caja25_caja,
+    "caja25_banco": caja25_banco,
+    "caja25": caja25,
+    "cv25": cv25,
+    "oc25_iva": oc25_iva,
+    "oc25_sld": oc25_sld,
+    "oc25_dbc": oc25_dbc,
+    "oc25_ret": oc25_ret,
+    "oc25": oc25,
+    "bc25": bc25,
+    "dc25": dc25,
+    "df25_bsas": df25_bsas,
+    "df25_caba": df25_caba,
+    "df25": df25,
+    "rem25": rem25,
+    "ds25": ds25,
+    "tp25": tp25,
+    "ta25": ta25,
+    "pn25": pn25,
+    "recpam25": recpam25,
+    "recpam_rx_aper": recpam_rx_aper,
+    "recpam25_adj": recpam25_adj,
+    "res25_adj": res25_adj,
+    # 2024 reexpresado
+    "caja24": caja24,
+    "cv24": cv24,
+    "oc24": oc24,
+    "bc24": bc24,
+    "dc24": dc24,
+    "df24": df24,
+    "rem24": rem24,
+    "ds24": ds24,
+    "tp24": tp24,
+    "pn24_rx": pn24_rx,
+    "recpam24": recpam24,
+    "res24": res24,
+}
+_notes_path = os.path.join(os.path.dirname(OUT), "notes_data.json")
+with open(_notes_path, "w", encoding="utf-8") as _f:
+    json.dump(notes_data, _f, ensure_ascii=False, indent=2)
+print(f"📋 notes_data.json guardado: {_notes_path}")
+
 wb.save(OUT)
 print(f"\n✅ Guardado: {OUT}")

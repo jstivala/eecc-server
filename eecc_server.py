@@ -123,8 +123,33 @@ async def generar(
             else:
                 _docx_to_pdf(informe_filled, informe_pdf)
 
+        # 2b. Notas contables → docx → PDF
+        notas_pdf = os.path.join(tmp, "notas.pdf")
+        notes_json_path = os.path.join(tmp, "notes_data.json")
+        if os.path.exists(notes_json_path):
+            try:
+                import json as _json
+                with open(notes_json_path, "r", encoding="utf-8") as _f:
+                    notes = _json.load(_f)
+                notas_docx = os.path.join(tmp, "notas.docx")
+                _generate_notas_docx(notes, notas_docx, fecha_cierre.strip())
+                if lo:
+                    _libreoffice_convert(lo, notas_docx, tmp, notas_pdf)
+                else:
+                    _docx_to_pdf(notas_docx, notas_pdf)
+            except Exception as notas_err:
+                print(f"[NOTAS] Error generando notas.docx: {notas_err}")
+                notas_pdf = None
+        else:
+            notas_pdf = None
+
         # 3. Mergear PDFs
-        _merge_pdfs([excel_pdf, informe_pdf], merged_pdf)
+        pdfs_to_merge = [excel_pdf]
+        if notas_pdf and os.path.exists(notas_pdf):
+            pdfs_to_merge.append(notas_pdf)
+        if os.path.exists(informe_pdf):
+            pdfs_to_merge.append(informe_pdf)
+        _merge_pdfs(pdfs_to_merge, merged_pdf)
 
         # 4. ZIP con xlsx + pdf
         zip_path = os.path.join(tmp, "eecc.zip")
@@ -344,6 +369,224 @@ def _replace_para(para, replacements):
             for run in para.runs:
                 if key in run.text:
                     run.text = run.text.replace(key, val)
+
+
+def _generate_notas_docx(notes: dict, out_path: str, fecha_cierre: str):
+    """Genera el documento Word de Notas a los Estados Contables."""
+    from docx import Document
+    from docx.shared import Pt, Cm, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    doc = Document()
+
+    # ── Márgenes de página ──────────────────────────────────────────────────
+    for section in doc.sections:
+        section.top_margin    = Cm(2)
+        section.bottom_margin = Cm(2)
+        section.left_margin   = Cm(2.5)
+        section.right_margin  = Cm(2.5)
+
+    # ── Helpers ─────────────────────────────────────────────────────────────
+    def _add_para(text, bold=False, italic=False, size=10,
+                  align=WD_ALIGN_PARAGRAPH.LEFT, space_before=0, space_after=4):
+        p = doc.add_paragraph()
+        p.alignment = align
+        pf = p.paragraph_format
+        pf.space_before = Pt(space_before)
+        pf.space_after  = Pt(space_after)
+        run = p.add_run(text)
+        run.bold   = bold
+        run.italic = italic
+        run.font.size = Pt(size)
+        return p
+
+    def _fmt(v):
+        """Formatea un número como $ 1,234,567.89"""
+        if v is None:
+            return "$ -"
+        try:
+            return f"$ {float(v):>15,.2f}"
+        except (TypeError, ValueError):
+            return str(v)
+
+    def _set_cell_bg(cell, hex_color):
+        tc = cell._tc
+        tcPr = tc.get_or_add_tcPr()
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:val"), "clear")
+        shd.set(qn("w:color"), "auto")
+        shd.set(qn("w:fill"), hex_color)
+        tcPr.append(shd)
+
+    def _add_table(label, rows_data):
+        """
+        rows_data: list of (cuenta, val25, val24)
+        Última fila = TOTAL (bold).
+        """
+        _add_para(label, bold=True, size=10, space_before=8, space_after=2)
+        tbl = doc.add_table(rows=1, cols=3)
+        tbl.style = "Table Grid"
+
+        # Anchos de columna
+        tbl.columns[0].width = Cm(10)
+        tbl.columns[1].width = Cm(3.5)
+        tbl.columns[2].width = Cm(3.5)
+
+        # Header
+        hdr = tbl.rows[0].cells
+        hdr[0].text = "Cuenta"
+        hdr[1].text = f"Actual\n{notes['ej25']}"
+        hdr[2].text = f"Anterior (reexp.)\n{notes['ej24']}"
+        for cell in hdr:
+            _set_cell_bg(cell, "EEEEEE")
+            for para in cell.paragraphs:
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for run in para.runs:
+                    run.bold = True
+                    run.font.size = Pt(9)
+
+        # Filas de datos
+        for i, (cuenta, v25, v24) in enumerate(rows_data):
+            is_total = (i == len(rows_data) - 1)
+            row = tbl.add_row().cells
+            row[0].text = cuenta
+            row[1].text = _fmt(v25)
+            row[2].text = _fmt(v24)
+            for j, cell in enumerate(row):
+                for para in cell.paragraphs:
+                    para.alignment = WD_ALIGN_PARAGRAPH.RIGHT if j > 0 else WD_ALIGN_PARAGRAPH.LEFT
+                    for run in para.runs:
+                        run.bold = is_total
+                        run.font.size = Pt(9)
+
+        doc.add_paragraph()  # espacio después de tabla
+
+    # ── Valores de notas ─────────────────────────────────────────────────────
+    n = notes
+    ej25      = n["ej25"]
+    ej24      = n["ej24"]
+    ej25_year = ej25.split("/")[-1] if "/" in ej25 else ej25[:4]
+
+    # ── HEADER ───────────────────────────────────────────────────────────────
+    _add_para(n["empresa"], bold=True, size=14,
+              align=WD_ALIGN_PARAGRAPH.CENTER, space_after=2)
+    _add_para("NOTAS A LOS ESTADOS CONTABLES", bold=True, size=12,
+              align=WD_ALIGN_PARAGRAPH.CENTER, space_after=2)
+    _add_para(f"Por el ejercicio cerrado el {ej25}", italic=True, size=10,
+              align=WD_ALIGN_PARAGRAPH.CENTER, space_after=6)
+
+    # Línea separadora
+    p_sep = doc.add_paragraph()
+    p_sep.paragraph_format.space_after = Pt(6)
+    p_run = p_sep.add_run("─" * 80)
+    p_run.font.size = Pt(8)
+
+    # ── SECCIÓN 1: Texto normativo ────────────────────────────────────────────
+    sec1_blocks = [
+        ("1 - Normas Contables aplicadas:", True),
+        ("A continuación se detallan las normas contables más relevantes, utilizadas por la Sociedad para la preparación de los presentes estados contables.", False),
+        ("1.1 Modelo de presentación de los Estados Contables", True),
+        (f"Los presentes estados contables han sido preparados en moneda homogénea (pesos de diciembre de {ej25_year}), reconociendo en forma integral los efectos de la inflación de conformidad con lo establecido en la Resolución Tecnica (RT) N° 6, en virtud de haberse determinado la existencia de un contexto de alta inflación que vuelve necesaria la reexpresion de los estados contables.", False),
+        ("1.2 Consideración de los efectos del cambio en el poder adquisitivo de la moneda:", True),
+        ("Desde la entrada en vigencia de la RT N° 39 (aprobada por el Consejo Profesional de Ciencias Económicas de la Ciudad Autónoma de Buenos Aires (CPCECABA) mediante Resolución de Consejo Directivo N° 20/2014), que modifico las normas sobre la unidad de medida de la RT N° 17, la necesidad de reexpresar los estados contables para reflejar los cambios en el poder adquisitivo de la moneda viene indicada por la existencia o no de un contexto de inflación tal que lleve a calificar la economía de altamente inflacionaria. A los fines de identificar la existencia de un entorno económico inflacionario, la interpretación N° 8 (aprobada por el CPCECABA mediante Resolución del Consejo Directivo N° 115/2014) brinda una pauta cuantitativa que es condición necesaria para proceder a reexpresar las cifras de los estados contables, dicha pauta consiste en que la tasa acumulada de inflación en tres años, considerando el Indice de Precios Internos al por Mayor (IPIM) elaborado por el Instituto de Estadística y Censos (INDEC), alcance o sobrepace el 100 % entre otros factores.", False),
+        ("Durante el primer semestre de 2018, diversos factores macroeconómicos produjeron una aceleración significativa de la inflación, resultando en índices que excedieron el 100 % acumulado en tres años, y en proyecciones de inflación que confirmaron dicha tendencia. Como consecuencia de ello, la Junta de Gobierno de la Federación Argentina de Consejos Profesionales de Ciencias Económicas (FACPCE) emitió la Resolución N° 539/2018 (aprobada por el CPCECABA mediante Resolución de Consejo Directivo N° 107/2018), indicando que se encontraba configurado el contexto de alta inflación y que los estados contables correspondientes a períodos anuales o intermedios cerrados a partir del 1 de julio de 2018 deberán ser ajustados para reflejar los cambios en el poder adquisitivo de la moneda.", False),
+        ("La aplicación del proceso de reexpresion establecido en la RT N° 6 permite el reconocimiento de las ganancias y perdidas derivadas del mantenimiento de activos y pasivos expuestos a los cambios del poder adquisitivo de la moneda del estado de resultados.", False),
+        (f"El estado contable correspondiente al ejercicio cerrado el {ej25}, se encuentra ajustado por inflación.", False),
+        ("1.3 Criterios de Valuación", True),
+        ("1.3.1 Los activos y pasivos en moneda nacional están valuados a su valor nominal.", True),
+        ("1.3.2 Impuesto a las Ganancias", True),
+        ("Las normas contables profesionales vigentes requieren la contabilización del impuesto a las ganancias por el método del impuesto diferido. Este criterio implica el reconocimiento de partidas de activos y de pasivos por impuesto diferido, en los casos que se produzcan diferencias temporarias entre la medición contable y la medición fiscal de los activos y de los pasivos, o cuando existan quebrantos impositivos utilizables para compensar ganancias imponibles de ejercicios futuros.", False),
+        ("La Sociedad no presenta diferencias temporarias ni quebrantos impositivos utilizables para compensar ganancias imponibles de ejercicios futuros, por lo tanto, determino el cargo por impuesto a las ganancias mediante la aplicación de la tasa de dicho impuesto sobre el resultado impositivo, el cual coincide con el resultado contable por no haber diferencias temporarias en las valuaciones contables e impositivas de los activos y pasivos.", False),
+        ("1.3.3 RECPAM: En el estado de resultado en moneda constante, se exponen en forma conjunta bajo la denominación \"RECPAM\" incluyendo resultados por exposición al cambio en el poder adquisitivo de la moneda los siguientes conceptos: Resultados por tenencia, resultados financieros y resultados por exposición al cambio del poder adquisitivo de la moneda.", True),
+        ("2 - Composición de los principales rubros:", True),
+    ]
+
+    for text, is_bold in sec1_blocks:
+        _add_para(text, bold=is_bold, size=10,
+                  align=WD_ALIGN_PARAGRAPH.JUSTIFY, space_after=3)
+
+    # ── SECCIÓN 2: Tablas numéricas ───────────────────────────────────────────
+    def rx(v):
+        return round(float(v) * float(n["cof"]), 2)
+
+    _add_table("2.1 Caja y Bancos", [
+        ("Caja",             n["caja25_caja"],  rx(800000)),
+        ("Banco Santander",  n["caja25_banco"], rx(36865.50)),
+        ("TOTAL",            n["caja25"],       n["caja24"]),
+    ])
+
+    _add_table("2.2 Créditos por Ventas", [
+        ("Deudores por Ventas", n["cv25"], n["cv24"]),
+        ("TOTAL",               n["cv25"], n["cv24"]),
+    ])
+
+    _add_table("2.3 Otros Créditos", [
+        ("IVA Saldo Técnico",              n["oc25_iva"], rx(323758.96)),
+        ("Saldo Libre Disponibilidad",     n["oc25_sld"], rx(655788.38)),
+        ("Impuesto Débitos y Créditos",    n["oc25_dbc"], rx(32934.04)),
+        ("Retención Ganancias Sufrida",    n["oc25_ret"], rx(738537.29)),
+        ("TOTAL",                          n["oc25"],     n["oc24"]),
+    ])
+
+    _add_table("2.4 Bienes de Cambio", [
+        ("Bienes de Cambio", n["bc25"], n["bc24"]),
+        ("TOTAL",            n["bc25"], n["bc24"]),
+    ])
+
+    _add_table("2.5.1 Deudas Comerciales", [
+        ("Proveedores", n["dc25"], n["dc24"]),
+        ("TOTAL",       n["dc25"], n["dc24"]),
+    ])
+
+    _add_table("2.5.2 Cargas Fiscales", [
+        ("IIBB BSAS a pagar", n["df25_bsas"], rx(58067)),
+        ("IIBB CABA a pagar", n["df25_caba"], 0),
+        ("TOTAL",             n["df25"],      n["df24"]),
+    ])
+
+    _add_table("2.5.3 Remuneraciones", [
+        ("Cargas Sociales a pagar", n["rem25"], n["rem24"]),
+        ("TOTAL",                   n["rem25"], n["rem24"]),
+    ])
+
+    _add_table("2.5.4 Deudas Sociales", [
+        ("Cuenta particular socios", n["ds25"], n["ds24"]),
+        ("TOTAL",                    n["ds25"], n["ds24"]),
+    ])
+
+    _add_table("2.6 RECPAM", [
+        ("RECPAM operativo",                    n["recpam25"],     n["recpam24"]),
+        ("Ajuste reexpresión apertura (RT6)",   n["recpam_rx_aper"], 0),
+        ("TOTAL RECPAM",                        n["recpam25_adj"], n["recpam24"]),
+    ])
+
+    # ── SECCIÓN 3: Patrimonio Neto Negativo (condicional) ────────────────────
+    if float(n["pn25"]) < 0:
+        _add_para("3 - Patrimonio Neto Negativo", bold=True, size=10,
+                  space_before=8, space_after=3)
+        _add_para(
+            f"Al cierre del ejercicio {ej25}, la Sociedad presenta un Patrimonio Neto "
+            f"negativo de {_fmt(n['pn25'])}. Esta situación obedece a los resultados "
+            f"acumulados del ejercicio y ejercicios anteriores. Los socios se encuentran "
+            f"al tanto de esta situación y han comprometido su apoyo financiero para "
+            f"normalizar la situación patrimonial de la Sociedad.",
+            size=10, align=WD_ALIGN_PARAGRAPH.JUSTIFY, space_after=3
+        )
+
+    # ── FOOTER en cada página ─────────────────────────────────────────────────
+    for section in doc.sections:
+        footer = section.footer
+        footer_para = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+        footer_para.text = "Las notas forman parte integrante de los estados contables."
+        footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        for run in footer_para.runs:
+            run.font.size = Pt(8)
+            run.italic = True
+
+    doc.save(out_path)
+    print(f"[NOTAS] notas.docx guardado: {out_path}")
 
 
 def _merge_pdfs(pdf_paths: list, output_path: str):
