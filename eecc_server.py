@@ -517,12 +517,12 @@ def _generate_notas_docx(notes: dict, out_path: str, fecha_cierre: str):
         ("TOTAL",            n["caja25"],       n["caja24"]),
     ])
 
-    _add_table("2.2 Créditos por Ventas", [
+    _add_table("2.2 Créditos por Ventas en Moneda", [
         ("Deudores por Ventas", n["cv25"], n["cv24"]),
         ("TOTAL",               n["cv25"], n["cv24"]),
     ])
 
-    _add_table("2.3 Otros Créditos", [
+    _add_table("2.3 Otros Créditos en Moneda", [
         ("IVA Saldo Técnico",              n["oc25_iva"], rx(323758.96)),
         ("Saldo Libre Disponibilidad",     n["oc25_sld"], rx(655788.38)),
         ("Impuesto Débitos y Créditos",    n["oc25_dbc"], rx(32934.04)),
@@ -535,23 +535,23 @@ def _generate_notas_docx(notes: dict, out_path: str, fecha_cierre: str):
         ("TOTAL",            n["bc25"], n["bc24"]),
     ])
 
-    _add_table("2.5.1 Deudas Comerciales", [
+    _add_table("2.5.1 Deudas Comerciales en Moneda", [
         ("Proveedores", n["dc25"], n["dc24"]),
         ("TOTAL",       n["dc25"], n["dc24"]),
     ])
 
-    _add_table("2.5.2 Cargas Fiscales", [
+    _add_table("2.5.2 Cargas Fiscales en Moneda", [
         ("IIBB BSAS a pagar", n["df25_bsas"], rx(58067)),
         ("IIBB CABA a pagar", n["df25_caba"], 0),
         ("TOTAL",             n["df25"],      n["df24"]),
     ])
 
-    _add_table("2.5.3 Remuneraciones", [
+    _add_table("2.5.3 Remuneraciones en Moneda", [
         ("Cargas Sociales a pagar", n["rem25"], n["rem24"]),
         ("TOTAL",                   n["rem25"], n["rem24"]),
     ])
 
-    _add_table("2.5.4 Deudas Sociales", [
+    _add_table("2.5.4 Deudas Sociales en Moneda", [
         ("Cuenta particular socios", n["ds25"], n["ds24"]),
         ("TOTAL",                    n["ds25"], n["ds24"]),
     ])

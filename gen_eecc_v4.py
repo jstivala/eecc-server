@@ -417,8 +417,8 @@ r = hdr_section(ws, r, "ACTIVO", ncols=3)
 r = section(ws, r, "Activo Corriente", ncols=3)
 r = detail(ws, r, "Caja y Bancos (Nota 2.1)",     caja25, caja24)
 r = detail(ws, r, "Inversiones",                  inv25,  rx(0))
-r = detail(ws, r, "Créditos por Ventas (Nota 2.2)", cv25, cv24)
-r = detail(ws, r, "Otros Créditos (Nota 2.3)",    oc25,   oc24)
+r = detail(ws, r, "Créditos por Ventas en Moneda (Nota 2.2)", cv25, cv24)
+r = detail(ws, r, "Otros Créditos en Moneda (Nota 2.3)",    oc25,   oc24)
 r = detail(ws, r, "Bienes de Cambio (Nota 2.4)",  bc25,   bc24)
 r = total(ws, r, "Total del Activo Corriente",    ta25,   ta24)
 r = section(ws, r, "Activo No Corriente", ncols=3)
@@ -434,10 +434,10 @@ r = blank(ws, r)
 # PASIVO
 r = hdr_section(ws, r, "PASIVO", ncols=3)
 r = section(ws, r, "Pasivo Corriente", ncols=3)
-r = detail(ws, r, "Deudas Comerciales (Nota 2.5.1)",         dc25,  dc24)
-r = detail(ws, r, "Cargas Fiscales (Nota 2.5.2)",            df25,  df24)
-r = detail(ws, r, "Remuneraciones y Cargas Sociales (Nota 2.5.3)", rem25, rem24)
-r = detail(ws, r, "Deudas Sociales (Nota 2.5.4)",            ds25,  ds24)
+r = detail(ws, r, "Deudas Comerciales en Moneda (Nota 2.5.1)",         dc25,  dc24)
+r = detail(ws, r, "Cargas Fiscales en Moneda (Nota 2.5.2)",            df25,  df24)
+r = detail(ws, r, "Remuneraciones y Cargas Sociales en Moneda (Nota 2.5.3)", rem25, rem24)
+r = detail(ws, r, "Deudas Sociales en Moneda (Nota 2.5.4)",            ds25,  ds24)
 r = total(ws, r, "Total Deudas",                             tp25,  tp24)
 r = total(ws, r, "Total del Pasivo Corriente",               tp25,  tp24)
 r = total(ws, r, "TOTAL DEL PASIVO",                         tp25,  tp24, bg=C_HDR)
@@ -912,12 +912,12 @@ Banco Santander Río en $          $ {caja25_banco:>16,.2f}    $    {rx(36865.50
                                   ——————————————————         ———————————————
 TOTAL                             $ {caja25:>16,.2f}    $  {caja24:>16,.2f}""", h=80)
 
-r = nota(ws, r, "Nota 2.2\nCréditos por Ventas",
+r = nota(ws, r, "Nota 2.2\nCréditos por Ventas en Moneda",
 f"""                                            2025              2024 (reexp.)
 Deudores por Ventas               $ {cv25:>16,.2f}    $  {cv24:>16,.2f}
 TOTAL                             $ {cv25:>16,.2f}    $  {cv24:>16,.2f}""", h=50)
 
-r = nota(ws, r, "Nota 2.3\nOtros Créditos",
+r = nota(ws, r, "Nota 2.3\nOtros Créditos en Moneda",
 f"""                                            2025              2024 (reexp.)
 IVA Saldo Técnico                 $ {oc25_iva:>16,.2f}    $  {rx(323758.96):>14,.2f}  (crédito IG)
 Saldo Libre Disponibilidad        $ {oc25_sld:>16,.2f}    $  {rx(655788.38):>14,.2f}  (anticipo prov.)
@@ -934,12 +934,12 @@ Las existencias al inicio del ejercicio 2025 se determinaron reexpresando el sal
 
 r = nota(ws, r, "Nota 2.5\nCuentas a Pagar", "", h=20)
 
-r = nota(ws, r, "  2.5.1 — Comerciales",
+r = nota(ws, r, "  2.5.1 — Deudas Comerciales en Moneda",
 f"""                                            2025              2024 (reexp.)
 Proveedores                       $ {dc25:>16,.2f}    $  {dc24:>16,.2f}
 TOTAL                             $ {dc25:>16,.2f}    $  {dc24:>16,.2f}""", h=55)
 
-r = nota(ws, r, "  2.5.2 — Cargas Fiscales",
+r = nota(ws, r, "  2.5.2 — Cargas Fiscales en Moneda",
 f"""                                            2025              2024 (reexp.)
 IVA a pagar                       $ {0:>16,.2f}    $  {rx(2000000):>14,.2f}
 Acreditaciones Locales            $ {0:>16,.2f}    $  {rx(1360699):>14,.2f}
@@ -948,13 +948,13 @@ IIBB CABA a pagar                 $ {df25_caba:>16,.2f}    $  {0:>14,.2f}
                                   ——————————————————         ———————————————
 TOTAL                             $ {df25:>16,.2f}    $  {df24:>16,.2f}""", h=90)
 
-r = nota(ws, r, "  2.5.3 — Remuneraciones y Cargas Sociales",
+r = nota(ws, r, "  2.5.3 — Remuneraciones y Cargas Sociales en Moneda",
 f"""                                            2025              2024 (reexp.)
 Cargas Sociales a pagar           $ {0:>16,.2f}    $  {rem24:>16,.2f}
 Sueldos y Jornales a pagar        $ {0:>16,.2f}    $  {0:>16,.2f}
 TOTAL                             $ {rem25:>16,.2f}    $  {rem24:>16,.2f}""", h=60)
 
-r = nota(ws, r, "  2.5.4 — Deudas Sociales",
+r = nota(ws, r, "  2.5.4 — Deudas Sociales en Moneda",
 f"""                                            2025              2024 (reexp.)
 Cuenta particular Federico Guzzetti $ {ds25:>14,.2f}    $  {ds24:>16,.2f}
 TOTAL                             $ {ds25:>16,.2f}    $  {ds24:>16,.2f}""", h=55)
