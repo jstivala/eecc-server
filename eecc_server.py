@@ -224,11 +224,43 @@ def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
     from xlsx2html import xlsx2html as x2h
     from weasyprint import HTML
     from openpyxl import load_workbook
+    from openpyxl.utils import get_column_letter
     from pypdf import PdfWriter, PdfReader
     import tempfile
 
     LANDSCAPE_SHEETS = {'EEPN', 'Anexo I', 'Anexo III'}
     MULTIPAGE_OK     = {'Notas'}   # solapas que pueden tener varias páginas
+    MARGIN_CM        = 0.5         # margen en cm para hojas financieras
+
+    def _sheet_scale(ws, landscape):
+        """Calcula el factor de zoom para que la hoja entre en 1 página A4."""
+        page_w_mm = 297 if landscape else 210
+        page_h_mm = 210 if landscape else 297
+        usable_w_px = (page_w_mm - 2 * MARGIN_CM * 10) / 25.4 * 96
+        usable_h_px = (page_h_mm - 2 * MARGIN_CM * 10) / 25.4 * 96
+
+        n_cols = ws.max_column or 1
+        n_rows = ws.max_row or 1
+
+        # Ancho total: xlsx2html usa ~7.2px por unidad Excel; +padding
+        col_w = sum(
+            (ws.column_dimensions.get(get_column_letter(c)) or
+             type('_', (), {'width': 8})()).width
+            for c in range(1, n_cols + 1)
+        )
+        # Alto total: 1 punto Excel ≈ 1.333px
+        row_h = sum(
+            (ws.row_dimensions.get(r) or
+             type('_', (), {'height': 15})()).height
+            for r in range(1, n_rows + 1)
+        )
+
+        content_w_px = col_w  * 7.2 + 30   # +30 para bordes/scroll
+        content_h_px = row_h * 1.333 + 30
+
+        scale_w = usable_w_px / max(content_w_px, 1)
+        scale_h = usable_h_px / max(content_h_px, 1)
+        return min(1.0, scale_w, scale_h)
 
     wb = load_workbook(xlsx_path)
     sheet_pdfs = []
@@ -239,35 +271,33 @@ def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
             x2h(xlsx_path, buf, sheet=sheet_name)
             full_html = buf.getvalue()
 
-            landscape  = sheet_name in LANDSCAPE_SHEETS
-            multipage  = sheet_name in MULTIPAGE_OK
+            landscape = sheet_name in LANDSCAPE_SHEETS
+            multipage = sheet_name in MULTIPAGE_OK
             pw = '297mm' if landscape else '210mm'
             ph = '210mm' if landscape else '297mm'
 
-            ws_sheet   = wb[sheet_name]
-            nrows      = ws_sheet.max_row or 30
+            ws_sheet = wb[sheet_name]
 
             if multipage:
-                # Notas: texto largo, permitir multi-página con fuente normal
                 inject = (
                     f'<style>'
                     f'@page {{ size: {pw} {ph}; margin: 0.7cm; }}'
                     f'body {{ font-size: 7pt !important; }}'
                     f'table {{ width: 100% !important; }}'
-                    f'td, th {{ overflow: hidden !important; white-space: normal !important; word-break: break-word !important; }}'
+                    f'td, th {{ white-space: normal !important; word-break: break-word !important; }}'
                     f'</style>'
                 )
             else:
-                # Solapas financieras: ajustar fuente dinámicamente para caber en 1 página
-                max_rows_1page = 180 if landscape else 250
-                font_pt = max(4.0, min(6.5, max_rows_1page / max(nrows, 1)))
+                scale = _sheet_scale(ws_sheet, landscape)
+                print(f"[XLSX2PDF] {sheet_name}: scale={scale:.3f} ({'landscape' if landscape else 'portrait'})")
                 inject = (
                     f'<style>'
-                    f'@page {{ size: {pw} {ph}; margin: 0.5cm; }}'
-                    f'html, body {{ font-size: {font_pt:.1f}pt !important; margin: 0; padding: 0; }}'
-                    f'table {{ width: 100% !important; border-collapse: collapse !important; }}'
+                    f'@page {{ size: {pw} {ph}; margin: {MARGIN_CM}cm; }}'
+                    # zoom escala tanto ancho como alto colapsando el espacio en layout
+                    f'html {{ zoom: {scale:.4f}; }}'
+                    f'table {{ border-collapse: collapse !important; }}'
                     f'td, th {{ overflow: hidden !important; white-space: nowrap !important; '
-                    f'padding: 0 2px !important; line-height: 1.25 !important; }}'
+                    f'padding: 0 2px !important; line-height: 1.3 !important; }}'
                     f'</style>'
                 )
 
@@ -280,7 +310,7 @@ def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
             HTML(string=full_html).write_pdf(tmp)
             sheet_pdfs.append(tmp)
         except Exception as e:
-            print(f"[XLSX2PDF] {sheet_name}: {e}")
+            print(f"[XLSX2PDF] {sheet_name}: ERROR {e}")
 
     writer = PdfWriter()
     for p in sheet_pdfs:
