@@ -627,11 +627,9 @@ row_height(ws, r, 28); r += 1
 ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
 c = ws.cell(r, 1); c.value = " ACTIVO"; c.fill = fl(C_HDR)
 c.font = fw(bold=True, color="FFFFFF", size=10)
-ws.cell(r, 3).value = "$"; ws.cell(r, 3).fill = fl(C_HDR)
 ws.merge_cells(start_row=r, start_column=6, end_row=r, end_column=9)
 c = ws.cell(r, 6); c.value = " PASIVO"; c.fill = fl(C_HDR)
 c.font = fw(bold=True, color="FFFFFF", size=10)
-ws.cell(r, 8).value = "$"; ws.cell(r, 8).fill = fl(C_HDR)
 ws.cell(r, 5).fill = fl("FFFFFF"); r += 1
 
 def _esp(ws, r,
