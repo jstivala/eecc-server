@@ -199,7 +199,10 @@ def _libreoffice_convert(lo_bin: str, input_path: str, out_dir: str, desired_pat
 
 
 def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
-    """Convierte Excel a PDF: una página por solapa preservando estilos de xlsx2html."""
+    """Convierte Excel a PDF: una página por solapa.
+    Escala directamente los valores px/pt en el HTML generado por xlsx2html
+    para que weasyprint (que ignora CSS zoom) los vea ya escalados."""
+    import re as _re
     from xlsx2html import xlsx2html as x2h
     from weasyprint import HTML
     from openpyxl import load_workbook
@@ -208,46 +211,52 @@ def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
     import tempfile
 
     LANDSCAPE_SHEETS = {'EEPN', 'Anexo I', 'Anexo III'}
-    MULTIPAGE_OK     = {'Notas'}        # solapas que pueden tener varias páginas
-    SKIP_PDF_SHEETS  = {'SS Homogéneo'} # solo en Excel, no en PDF
-    MARGIN_CM        = 0.5              # margen en cm para hojas financieras
+    MULTIPAGE_OK     = {'Notas'}
+    SKIP_PDF_SHEETS  = {'SS Homogéneo'}
+    MARGIN_CM        = 0.5
 
     def _sheet_scale(ws, landscape):
-        """Calcula el factor de zoom para que la hoja entre en 1 página A4."""
         page_w_mm = 297 if landscape else 210
         page_h_mm = 210 if landscape else 297
         usable_w_px = (page_w_mm - 2 * MARGIN_CM * 10) / 25.4 * 96
         usable_h_px = (page_h_mm - 2 * MARGIN_CM * 10) / 25.4 * 96
 
-        n_cols = ws.max_column or 1
-        n_rows = ws.max_row or 1
-
-        # Ancho total: xlsx2html usa ~7.2px por unidad Excel; +padding
         col_w = sum(
             (ws.column_dimensions.get(get_column_letter(c)) or
              type('_', (), {'width': 8})()).width
-            for c in range(1, n_cols + 1)
+            for c in range(1, (ws.max_column or 1) + 1)
         )
-        # Alto total: 1 punto Excel ≈ 1.333px
         row_h = sum(
             (ws.row_dimensions.get(r) or
              type('_', (), {'height': 15})()).height
-            for r in range(1, n_rows + 1)
+            for r in range(1, (ws.max_row or 1) + 1)
         )
-
-        content_w_px = col_w  * 7.2 + 30   # +30 para bordes/scroll
+        content_w_px = col_w * 7.2 + 30
         content_h_px = row_h * 1.333 + 30
+        return min(1.0,
+                   usable_w_px / max(content_w_px, 1),
+                   usable_h_px / max(content_h_px, 1))
 
-        scale_w = usable_w_px / max(content_w_px, 1)
-        scale_h = usable_h_px / max(content_h_px, 1)
-        return min(1.0, scale_w, scale_h)
+    def _scale_html(html, scale):
+        """Reemplaza todos los valores px y pt en los atributos style del HTML
+        por su valor escalado. No toca el CSS de @page."""
+        if scale >= 1.0:
+            return html
+        def _scaler(m):
+            val = float(m.group(1))
+            unit = m.group(2)
+            return f'{val * scale:.2f}{unit}'
+        # Escala width:Npx, height:Npt, font-size:Npx dentro de atributos style=""
+        html = _re.sub(r'(?<=style="[^"]{0,2000})([\d.]+)(px|pt)(?=[^"]*")',
+                       _scaler, html)
+        return html
 
     wb = load_workbook(xlsx_path)
     sheet_pdfs = []
 
     for sheet_name in wb.sheetnames:
         if sheet_name in SKIP_PDF_SHEETS:
-            print(f"[XLSX2PDF] {sheet_name}: skipped (solo Excel)")
+            print(f"[XLSX2PDF] {sheet_name}: skipped")
             continue
         buf = io.StringIO()
         try:
@@ -258,26 +267,25 @@ def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
             multipage = sheet_name in MULTIPAGE_OK
             pw = '297mm' if landscape else '210mm'
             ph = '210mm' if landscape else '297mm'
-
             ws_sheet = wb[sheet_name]
 
             if multipage:
-                inject = (
+                page_css = (
                     f'<style>'
                     f'@page {{ size: {pw} {ph}; margin: 0.7cm; }}'
-                    f'body {{ font-size: 7pt !important; }}'
-                    f'table {{ width: 100% !important; }}'
-                    f'td, th {{ white-space: normal !important; word-break: break-word !important; }}'
+                    f'body {{ font-size: 7pt; }}'
+                    f'table {{ width: 100% !important; border-collapse: collapse; }}'
+                    f'td, th {{ white-space: normal; word-break: break-word; }}'
                     f'</style>'
                 )
             else:
                 scale = _sheet_scale(ws_sheet, landscape)
-                print(f"[XLSX2PDF] {sheet_name}: scale={scale:.3f} ({'landscape' if landscape else 'portrait'})")
-                inject = (
+                print(f"[XLSX2PDF] {sheet_name}: scale={scale:.3f}")
+                # Escalar directamente los px/pt en el HTML — no depende de CSS zoom
+                full_html = _scale_html(full_html, scale)
+                page_css = (
                     f'<style>'
                     f'@page {{ size: {pw} {ph}; margin: {MARGIN_CM}cm; }}'
-                    # zoom escala tanto ancho como alto colapsando el espacio en layout
-                    f'html {{ zoom: {scale:.4f}; }}'
                     f'table {{ border-collapse: collapse !important; }}'
                     f'td, th {{ overflow: hidden !important; white-space: nowrap !important; '
                     f'padding: 0 2px !important; line-height: 1.3 !important; }}'
@@ -285,9 +293,9 @@ def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
                 )
 
             if '</head>' in full_html:
-                full_html = full_html.replace('</head>', inject + '</head>')
+                full_html = full_html.replace('</head>', page_css + '</head>')
             else:
-                full_html = inject + full_html
+                full_html = page_css + full_html
 
             tmp = tempfile.mktemp(suffix='.pdf')
             HTML(string=full_html).write_pdf(tmp)
