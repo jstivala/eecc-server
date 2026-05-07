@@ -887,19 +887,24 @@ def nota(ws, r, nro, texto, h=60):
     s(ws, r, 2, texto, fn=fw(size=10), al=al_wrap)
     return r + 1
 
-r = nota(ws, r, "1 — Normas Contables Aplicadas",
-"""1.1 Modelo de presentación
-Los presentes estados contables han sido preparados en moneda homogénea (pesos de poder adquisitivo al 31/12/2025), reconociendo en forma integral los efectos de la inflación de conformidad con la Resolución Técnica (RT) N° 6 de la FACPCE. Los criterios de exposición y valuación siguen la RT N°9 (normas particulares para entes comerciales), RT N°17 (normas particulares de medición para entes comerciales), RT N°16 (marco conceptual), RT N°18 (activos intangibles) y RT N°37 (auditoría). El estado de flujo de efectivo se prepara conforme a la RT N°8.
+r = nota(ws, r, "1.1 — Modelo de presentación de los Estados Contables",
+"""Los presentes estados contables han sido preparados en moneda homogénea (pesos de diciembre de 2025), reconociendo en forma integral los efectos de la inflación de conformidad con lo establecido en la Resolución Técnica (RT) N° 6, en virtud de haberse determinado la existencia de un contexto de alta inflación que vuelve necesaria la reexpresión de los estados contables.""", h=60)
 
-1.2 Reexpresión en moneda homogénea (RT N°6)
-La economía argentina reviste carácter inflacionario. Los estados contables comparativos del ejercicio anterior (cerrado el 31/12/2024) se reexpresan aplicando el coeficiente 1,2870 sobre todos sus saldos nominales, a fin de expresarlos en pesos de poder adquisitivo del 31/12/2025. El efecto monetario de mantener activos y pasivos expuestos se expone como RECPAM en el Estado de Resultados.
+r = nota(ws, r, "1.2 — Consideración de los efectos del cambio en el poder adquisitivo de la moneda",
+"""Desde la entrada en vigencia de la RT N° 39 (aprobada por el Consejo Profesional de Ciencias Económicas de la Ciudad Autónoma de Buenos Aires (CPCECABA) mediante Resolución de Consejo Directivo N° 20/2014), que modificó las normas sobre la unidad de medida de la RT N° 17, la necesidad de reexpresar los estados contables para reflejar los cambios en el poder adquisitivo de la moneda viene indicada por la existencia o no de un contexto de inflación tal que lleve a calificar la economía de altamente inflacionaria. A los fines de identificar la existencia de un entorno económico inflacionario, la Interpretación N° 8 (aprobada por el CPCECABA mediante Resolución del Consejo Directivo N° 115/2014) brinda una pauta cuantitativa que es condición necesaria para proceder a reexpresar las cifras de los estados contables; dicha pauta consiste en que la tasa acumulada de inflación en tres años, considerando el Índice de Precios Internos al por Mayor (IPIM) elaborado por el Instituto Nacional de Estadística y Censos (INDEC), alcance o sobrepase el 100%, entre otros factores.
 
-1.3 Criterios de valuación
-- Los activos y pasivos en moneda nacional se valúan a valor nominal (pesos corrientes).
-- Los créditos se valúan a su valor probable de realización.
-- Los bienes de cambio se valúan al costo de reposición o valor neto de realización, el menor.
-- Los bienes de uso se deprecian por el método de línea recta.
-- El impuesto a las ganancias se contabiliza por el método del impuesto diferido (RT N°17). Al cierre no se registran diferencias temporarias significativas.""", h=130)
+Durante el primer semestre de 2018, diversos factores macroeconómicos produjeron una aceleración significativa de la inflación, resultando en índices que excedieron el 100% acumulado en tres años y en proyecciones de inflación que confirmaron dicha tendencia. Como consecuencia de ello, la Junta de Gobierno de la Federación Argentina de Consejos Profesionales de Ciencias Económicas (FACPCE) emitió la Resolución N° 539/2018 (aprobada por el CPCECABA mediante Resolución de Consejo Directivo N° 107/2018), indicando que se encontraba configurado el contexto de alta inflación y que los estados contables correspondientes a períodos anuales o intermedios cerrados a partir del 1 de julio de 2018 deberán ser ajustados para reflejar los cambios en el poder adquisitivo de la moneda. La mencionada resolución también indicó que los estados contables correspondientes a períodos anuales o intermedios cerrados hasta el 30 de junio de 2018 inclusive no deberán reexpresarse.
+
+La aplicación del proceso de reexpresión establecido en la RT N° 6 permite el reconocimiento de las ganancias y pérdidas derivadas del mantenimiento de activos y pasivos expuestos a los cambios del poder adquisitivo de la moneda en el estado de resultados. El estado contable correspondiente al ejercicio cerrado el 31/12/2025 se encuentra ajustado por inflación.""", h=220)
+
+r = nota(ws, r, "1.3 — Criterios de Valuación",
+"""1.3.1 Los activos y pasivos en moneda nacional están valuados a su valor nominal.
+
+1.3.2 Impuesto a las Ganancias
+Las normas contables profesionales vigentes requieren la contabilización del impuesto a las ganancias por el método del impuesto diferido. Este criterio implica el reconocimiento de partidas de activos y de pasivos por impuesto diferido, en los casos que se produzcan diferencias temporarias entre la medición contable y la medición fiscal de los activos y de los pasivos, o cuando existan quebrantos impositivos utilizables para compensar ganancias imponibles de ejercicios futuros. La Sociedad no presenta diferencias temporarias ni quebrantos impositivos utilizables para compensar ganancias imponibles de ejercicios futuros; por lo tanto, determinó el cargo por impuesto a las ganancias mediante la aplicación de la tasa de dicho impuesto sobre el resultado impositivo, el cual coincide con el resultado contable por no haber diferencias temporarias en las valuaciones contables e impositivas de los activos y pasivos.
+
+1.3.3 RECPAM
+En el estado de resultados en moneda constante, se exponen en forma conjunta bajo la denominación "RECPAM" incluyendo resultados por exposición al cambio en el poder adquisitivo de la moneda los siguientes conceptos: Resultados por tenencia, resultados financieros y resultados por exposición al cambio del poder adquisitivo de la moneda.""", h=160)
 
 r = nota(ws, r, "2 — Composición de los principales rubros", "", h=20)
 
@@ -968,6 +973,15 @@ TOTAL RECPAM                      $ {recpam25_adj:>16,.2f}    $  {recpam24:>16,.
 El RECPAM (Resultado por Exposición al Cambio en el Poder Adquisitivo de la Moneda) surge de la
 reexpresión de los activos y pasivos monetarios expuestos a la inflación durante el ejercicio,
 de conformidad con la RT N°6.""", h=90)
+
+r = nota(ws, r, "Nota 2.7\nOtras Deudas en Moneda",
+f"""                                            2025              2024 (reexp.)
+Total                             $ {0:>16,.2f}    $  {0:>16,.2f}""", h=40)
+
+r = nota(ws, r, "Nota 2.8\nOtros Egresos",
+f"""                                            2025              2024 (reexp.)
+Constitución Reserva Legal        $ {0:>16,.2f}    $  {0:>16,.2f}
+Total                             $ {0:>16,.2f}    $  {0:>16,.2f}""", h=55)
 
 r = nota(ws, r, "3 — Patrimonio Neto Negativo",
 f"""El Estado de Situación Patrimonial al {EJ25} muestra un Patrimonio Neto negativo de
