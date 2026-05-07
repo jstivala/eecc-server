@@ -659,7 +659,7 @@ class _cleanup:
     def __init__(self, tmp_dir, final_zip):
         self._tmp = tmp_dir
         self._zip = final_zip
-    def __call__(self, *_):
+    async def __call__(self, *_):
         shutil.rmtree(self._tmp, ignore_errors=True)
         try: os.unlink(self._zip)
         except: pass
