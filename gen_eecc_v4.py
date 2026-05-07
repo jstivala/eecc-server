@@ -991,6 +991,123 @@ incurridos durante el período. La sociedad está desarrollando su actividad com
 proyecta revertir esta situación mediante la expansión de su cartera de clientes y el
 incremento de sus ingresos por servicios en los próximos ejercicios.""", h=90)
 
+
+# SS HOMOGÉNEO — Sumas y Saldos en moneda homogénea (RT6)
+# ════════════════════════════════════════════════════════════════════════════
+ws = wb.create_sheet("SS Homogéneo")
+
+AZUL_C2 = "BDD7EE"
+AMAN2   = "FFF2CC"
+VERDE2  = "E2EFDA"
+
+ws.merge_cells("A1:E1")
+t = ws.cell(row=1, column=1,
+    value=f"{EMPRESA}\nBALANCE DE SUMAS Y SALDOS EN MONEDA HOMOGÉNEA\nAl {EJ25} — pesos de poder adquisitivo al {EJ25}")
+t.font      = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+t.fill      = PatternFill(fill_type="solid", fgColor=C_HDR)
+t.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+ws.row_dimensions[1].height = 55
+
+for c, txt in enumerate(["Rubro", "Cuenta", "Saldo Nominal", "Ajuste RT6", "Saldo Homogéneo"], 1):
+    cell = ws.cell(row=2, column=c, value=txt)
+    cell.font      = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    cell.fill      = PatternFill(fill_type="solid", fgColor=C_HDR)
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    cell.border    = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
+
+ws.column_dimensions["A"].width = 28
+ws.column_dimensions["B"].width = 36
+ws.column_dimensions["C"].width = 18
+ws.column_dimensions["D"].width = 18
+ws.column_dimensions["E"].width = 18
+ws.row_dimensions[2].height = 18
+
+SSH_ADJ = {
+    "ajuste de capital":      -aj24_eepn,
+    "resultado no asignado":  -rna_inicio_rx,
+    "rna":                    -rna_inicio_rx,
+    "recpam":                 -recpam25_adj,
+}
+
+raw_rows = ss.get("_rows", [])
+
+r_ss = 3
+rubro_prev = None
+
+def _ssh_cell(ws, row, col, val, bold=False, bg=None, num=False):
+    cell = ws.cell(row=row, column=col, value=val)
+    cell.font      = Font(name="Calibri", size=10, bold=bold)
+    cell.border    = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
+    cell.alignment = Alignment(horizontal="right" if num else "left", vertical="center")
+    if bg:
+        cell.fill = PatternFill(fill_type="solid", fgColor=bg)
+    if num and val is not None:
+        cell.number_format = '#,##0.00;[Red]-#,##0.00'
+    return cell
+
+for rubro, cuenta, saldo_nom in raw_rows:
+    cuenta_key = cuenta.lower()
+    if cuenta_key in SSH_ADJ:
+        saldo_hom = SSH_ADJ[cuenta_key]
+        ajuste    = round(saldo_hom - saldo_nom, 2)
+        bg_row    = AMAN2
+    else:
+        saldo_hom = saldo_nom
+        ajuste    = None
+        bg_row    = None
+
+    if rubro != rubro_prev:
+        ws.merge_cells(f"A{r_ss}:E{r_ss}")
+        cell = ws.cell(row=r_ss, column=1, value=rubro)
+        cell.font      = Font(name="Calibri", size=10, bold=True)
+        cell.fill      = PatternFill(fill_type="solid", fgColor=AZUL_C2)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+        cell.border    = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
+        ws.row_dimensions[r_ss].height = 15
+        r_ss += 1
+        rubro_prev = rubro
+
+    _ssh_cell(ws, r_ss, 1, None,      bg=bg_row)
+    _ssh_cell(ws, r_ss, 2, cuenta,    bg=bg_row)
+    _ssh_cell(ws, r_ss, 3, saldo_nom, bg=bg_row, num=True)
+    _ssh_cell(ws, r_ss, 4, ajuste,    bg=bg_row, num=True)
+    _ssh_cell(ws, r_ss, 5, round(saldo_hom, 2), bg=bg_row, num=True)
+    ws.row_dimensions[r_ss].height = 15
+    r_ss += 1
+
+total_nom = round(sum(s for _, _, s in raw_rows), 2)
+total_hom = round(sum(SSH_ADJ.get(c.lower(), s) for _, c, s in raw_rows), 2)
+total_adj = round(total_hom - total_nom, 2)
+
+ws.merge_cells(f"A{r_ss}:B{r_ss}")
+for c, val in enumerate(["TOTAL", None, total_nom, total_adj, total_hom], 1):
+    cell = ws.cell(row=r_ss, column=c, value=val if c != 1 else "TOTAL")
+    cell.font      = Font(name="Calibri", size=10, bold=True)
+    cell.fill      = PatternFill(fill_type="solid", fgColor=VERDE2)
+    cell.border    = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
+    if c >= 3 and val is not None:
+        cell.number_format = '#,##0.00;[Red]-#,##0.00'
+        cell.alignment = Alignment(horizontal="right", vertical="center")
+ws.row_dimensions[r_ss].height = 16
+r_ss += 1
+
+verif_val = f"✓ Balance: {total_hom:,.2f}" if abs(total_hom) < 1 else f"⚠ Diferencia: {total_hom:,.2f}"
+cell = ws.cell(row=r_ss, column=5, value=verif_val)
+cell.font      = Font(name="Calibri", size=9, italic=True, bold=True,
+                      color="375623" if abs(total_hom) < 1 else "FF0000")
+cell.alignment = Alignment(horizontal="right")
+r_ss += 1
+
+ws.merge_cells(f"A{r_ss}:E{r_ss}")
+nota_ss = ws.cell(row=r_ss, column=1,
+    value=("Nota RT6: Se reemplazaron tres valores respecto del SS nominal: "
+           "(1) Ajuste de Capital → reexpresado × COF; "
+           "(2) RNA → resultado del ejercicio anterior reexpresado × COF; "
+           f"(3) RECPAM → incluye ajuste de apertura de ${recpam_rx_aper:,.2f} por consistencia de PN apertura/cierre."))
+nota_ss.font      = Font(name="Calibri", size=9, italic=True)
+nota_ss.alignment = Alignment(horizontal="left", wrap_text=True)
+ws.row_dimensions[r_ss].height = 35
+
 # ════════════════════════════════════════════════════════════════════════════
 # PAGE SETUP — para que cada hoja entre en una página al exportar a PDF
 # ════════════════════════════════════════════════════════════════════════════
@@ -1040,6 +1157,7 @@ page_setup(wb["Anexo II"],       landscape=False, fit_w=1, fit_h=0)
 page_setup(wb["Anexo III"],      landscape=True,  fit_w=1, fit_h=0)
 # Notas — Portrait, fit ancho; el alto puede ocupar varias páginas
 page_setup(wb["Notas"],          landscape=False, fit_w=1, fit_h=0)
+page_setup(wb["SS Homogéneo"],    landscape=False, fit_w=1, fit_h=0)
 
 # ════════════════════════════════════════════════════════════════════════════
 # GUARDAR
