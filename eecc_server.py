@@ -202,7 +202,7 @@ def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
     from pypdf import PdfWriter, PdfReader
     import tempfile
 
-    LANDSCAPE_SHEETS = {'ESP', 'EEPN', 'B. Uso', 'Gastos'}
+    LANDSCAPE_SHEETS = {'EEPN', 'Anexo I', 'Anexo III'}
 
     wb = load_workbook(xlsx_path)
     sheet_pdfs = []
