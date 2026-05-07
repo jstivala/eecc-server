@@ -12,7 +12,7 @@ import uvicorn
 
 app = FastAPI(title="EECC Generator")
 
-GEN_SCRIPT       = Path(__file__).parent / "gen_eecc_v7.py"
+GEN_SCRIPT       = Path(__file__).parent / "gen_eecc_v8.py"
 INFORME_TEMPLATE = Path(__file__).parent / "informe_template.docx"
 
 MONTHS_ES = {
@@ -202,7 +202,7 @@ def _xlsx_to_pdf(xlsx_path: str, pdf_path: str):
     from pypdf import PdfWriter, PdfReader
     import tempfile
 
-    LANDSCAPE_SHEETS = {'EEPN', 'Anexo I', 'Anexo III'}
+    LANDSCAPE_SHEETS = {'ESP', 'EEPN', 'B. Uso', 'Gastos'}
 
     wb = load_workbook(xlsx_path)
     sheet_pdfs = []
