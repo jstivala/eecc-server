@@ -1023,13 +1023,37 @@ ws.column_dimensions["E"].width = 18
 ws.row_dimensions[2].height = 18
 
 SSH_ADJ = {
-    "ajuste de capital":      -aj24_eepn,
-    "resultado no asignado":  -rna_inicio_rx,
+    # Valores en moneda homogénea (misma conv. de signo que raw_rows)
+    # PN → negativo; RECPAM ingreso → positivo
+    "ajuste de capital":      -aj24_eepn,       # reexpresado (PN negativo)
+    "resultado no asignado":  -rna_inicio_rx,   # RNA apertura reexpresado
     "rna":                    -rna_inicio_rx,
-    "recpam":                 -recpam25_adj,
+    "recpam":                  recpam25_adj,    # ingreso → positivo
 }
 
-raw_rows = ss.get("_rows", [])
+raw_rows = [
+    # (rubro, cuenta, saldo_nominal)
+    # Activo — positivo; Pasivo/PN — negativo (saldo en moneda del SS)
+    ("ACTIVO CORRIENTE",    "Caja y Bancos",             caja25),
+    ("ACTIVO CORRIENTE",    "Créditos por Ventas",        cv25),
+    ("ACTIVO CORRIENTE",    "Otros Créditos",             oc25),
+    ("ACTIVO CORRIENTE",    "Bienes de Cambio",           bc25),
+    ("ACTIVO NO CORRIENTE", "Inversiones",                inv25),
+    ("ACTIVO NO CORRIENTE", "Bienes de Uso",              bu25),
+    ("PASIVO CORRIENTE",    "Deudas Comerciales",         -dc25),
+    ("PASIVO CORRIENTE",    "Cargas Fiscales",            -df25),
+    ("PASIVO CORRIENTE",    "Remuneraciones",             -rem25),
+    ("PASIVO CORRIENTE",    "Deudas Sociales",            -ds25),
+    ("PATRIMONIO NETO",     "Capital Social",             -cap25),
+    ("PATRIMONIO NETO",     "Ajuste de Capital",          -aj25),
+    ("PATRIMONIO NETO",     "Resultado No Asignado",      -rna25),
+    ("PATRIMONIO NETO",     "Resultado del Ejercicio",    -res25),
+    ("RESULTADO",           "Ventas",                     ventas25),
+    ("RESULTADO",           "Costo de Servicios",         -costo_sv25),
+    ("RESULTADO",           "Gastos de Comercialización", -gcom25),
+    ("RESULTADO",           "Gastos de Administración",   -gadm25),
+    ("RESULTADO",           "RECPAM",                     recpam25),
+]
 
 r_ss = 3
 rubro_prev = None
