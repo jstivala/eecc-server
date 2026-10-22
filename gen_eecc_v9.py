@@ -1224,7 +1224,16 @@ def escribir_papeles(wb, a, X):
     r += 1
     ws.cell(r, 1, "Coeficiente medio del ejercicio (altas del ejercicio)")
     ws.cell(r, 2, f"=SQRT({cof_ref})").number_format = CF
+    ws.cell(r, 2).fill = INP
     cofm_ref = f"$B${r}"
+    ws.merge_cells(start_row=r, start_column=3, end_row=r, end_column=13)
+    nota = ws.cell(r, 3, "Se aplica a las altas de bienes de uso cuando no se conoce el mes de compra: supone que, en "
+                         "promedio, se adquirieron a mitad del ejercicio. Es la raíz cuadrada del coeficiente anual "
+                         "(y no el promedio simple) porque la inflación se acumula mes a mes. Si se conoce el mes de "
+                         "una compra relevante, reemplazar por el coeficiente de ese mes al cierre.")
+    nota.font = Font(italic=True, size=8)
+    nota.alignment = Alignment(wrap_text=True, vertical="top")
+    ws.row_dimensions[r].height = 36
     r += 1
     ws.cell(r, 1, "Método: simplificaciones para entidades pequeñas (RT 54); resultados del ejercicio en moneda "
                   "nominal y RECPAM determinado por diferencia.").font = Font(italic=True, size=9)
