@@ -534,7 +534,8 @@ def calcular(a, cuentas, prior):
         amort = round(min(o_cie * tasa / 100, max(o_cie - a_ini, 0)), 2) if not amort_booked else 0.0
         bu_rows.append(dict(tipo=tipo, o_ini=o_ini, altas=altas_h, bajas=bajas_h, o_cie=o_cie,
                             a_ini=a_ini, tasa=tasa, amort=amort, a_cie=a_ini + amort,
-                            neto=o_cie - a_ini - amort, neto_ant=rx(p["neto"])))
+                            neto=o_cie - a_ini - amort, neto_ant=rx(p["neto"]),
+                            o_ant=p["origen"], a_ant=p["acum"], altas_nom=max(altas_nom, 0.0)))
     if amort_booked:
         tot_o = sum(r["o_cie"] for r in bu_rows) or 1
         for r in bu_rows:
@@ -584,7 +585,9 @@ def calcular(a, cuentas, prior):
         base_rna = pn_prior - (cap + aj_p + apirr_p + res_p) if aportes_nom == 0 else rna_p
         I = dict(cap=cap, aj=round((base_cap + base_aj) * COF - base_cap, 2), apirr=rx(base_apirr),
                  resleg=rx(base_res), rna=rx(base_rna))
+        pn_base = dict(cap=base_cap, aj=base_aj, apirr=base_apirr, resleg=base_res, rna=base_rna)
     else:
+        pn_base = dict(cap=0.0, aj=0.0, apirr=0.0, resleg=0.0, rna=0.0)
         aportes_nom = pn_ss
         I = dict(cap=0.0, aj=0.0, apirr=0.0, resleg=0.0, rna=0.0)
     I["aportes"] = I["cap"] + I["aj"] + I["apirr"]
@@ -673,7 +676,7 @@ def calcular(a, cuentas, prior):
     if C["pn"] < 0:
         warn.append(f"El patrimonio neto al cierre es negativo ({fmt_ar(C['pn'])}).")
 
-    return dict(cuentas=clas, C=C, A=A, I=I, R=R, E=E, AE=AE, bu=bu_rows, amort_ej=amort_ej,
+    return dict(cuentas=clas, C=C, A=A, I=I, R=R, E=E, AE=AE, bu=bu_rows, amort_ej=amort_ej, pn_base=pn_base,
                 aportes=aportes_h, inicio=inicio, cierre=cierre, cierre_ant=cierre_ant,
                 tiene_prior=tiene_prior, moneda_ext=moneda_ext, warn=warn, cof=COF,
                 primer_rt54=not (tiene_prior and prior.normas_rt54),
@@ -1141,6 +1144,8 @@ def escribir_xlsx(path, a, X, S, notas):
     ws.page_setup.fitToHeight = 0
     ws.sheet_properties.pageSetUpPr.fitToPage = True
 
+    escribir_papeles(wb, a, X)
+
     # Control (no va al PDF)
     ws = wb.create_sheet("Control")
     ws.column_dimensions["A"].width = 50
@@ -1161,7 +1166,382 @@ def escribir_xlsx(path, a, X, S, notas):
     ws.cell(ws.max_row, 1).font = BOLD
     for w in X["warn"] or ["(ninguna)"]:
         ws.append([w])
+    wb.calculation.fullCalcOnLoad = True   # los papeles de trabajo usan fórmulas
     wb.save(path)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Papeles de trabajo de ajuste por inflación (solo en el XLSX)
+# ════════════════════════════════════════════════════════════════════════════
+def escribir_papeles(wb, a, X):
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    NF = '#,##0.00;(#,##0.00);"-"'
+    CF = '0.000000'
+    B = Font(bold=True)
+    H = PatternFill("solid", fgColor="1F3864")
+    INP = PatternFill("solid", fgColor="FFF2CC")   # celdas a completar / revisar
+    T = PatternFill("solid", fgColor="D9E1F2")
+    thin = Border(top=Side(style="thin", color="999999"))
+    C, A, I, R, prior = X["C"], X["A"], X["I"], X["R"], X["prior"]
+    tp = X["tiene_prior"]
+    g = (lambda k: prior.g(k)) if tp else (lambda k: 0.0)
+    ca, cc = X["cierre_ant"].strftime("%d/%m/%Y"), X["cierre"].strftime("%d/%m/%Y")
+
+    def hdr(ws, r, labels):
+        for j, l in enumerate(labels):
+            c = ws.cell(r, j + 1, l)
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = H
+            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.row_dimensions[r].height = 30
+
+    def titulo(ws, t):
+        ws.cell(1, 1, a.empresa).font = Font(bold=True, size=12)
+        ws.cell(2, 1, t).font = Font(bold=True, size=11)
+        ws.cell(3, 1, f"CUIT {fmt_cuit(a.cuit)} — Ejercicio N° {a.nro_ejercicio} del "
+                      f"{X['inicio'].strftime('%d/%m/%Y')} al {cc}").font = Font(italic=True, size=9)
+
+    def num(ws, r, c, v, fmt=NF, bold=False, fill=None):
+        cell = ws.cell(r, c, v)
+        cell.number_format = fmt
+        if bold:
+            cell.font = B
+        if fill:
+            cell.fill = fill
+        return cell
+
+    # ───────────────────────── CONTABLE ─────────────────────────
+    ws = wb.create_sheet("PT AxI contable")
+    for col, w in zip("ABCDEFGHIJKLM", [44, 18, 13, 18, 18, 16, 13, 18, 18, 13, 18, 10, 18]):
+        ws.column_dimensions[col].width = w
+    titulo(ws, "PAPEL DE TRABAJO — AJUSTE POR INFLACIÓN CONTABLE (RT 6 / RT 54)")
+    r = 5
+    ws.cell(r, 1, "1. Parámetros").font = B
+    r += 1
+    ws.cell(r, 1, f"Coeficiente de reexpresión {ca} → {cc} (índice FACPCE / IPC INDEC)")
+    num(ws, r, 2, X["cof"], CF, True, INP)
+    cof_ref = f"$B${r}"
+    r += 1
+    ws.cell(r, 1, "Coeficiente medio del ejercicio (altas del ejercicio)")
+    ws.cell(r, 2, f"=SQRT({cof_ref})").number_format = CF
+    cofm_ref = f"$B${r}"
+    r += 1
+    ws.cell(r, 1, "Método: simplificaciones para entidades pequeñas (RT 54); resultados del ejercicio en moneda "
+                  "nominal y RECPAM determinado por diferencia.").font = Font(italic=True, size=9)
+
+    # 2. PN de inicio
+    r += 2
+    ws.cell(r, 1, "2. Reexpresión del patrimonio neto al inicio").font = B
+    r += 1
+    hdr(ws, r, ["Cuenta", f"Saldo al {ca}", "Coeficiente", "Reexpresado", "Ajuste"])
+    pb = X["pn_base"]
+    first = r + 1
+    filas_pn = [("Capital social", pb["cap"], "cap"), ("Ajuste de capital", pb["aj"], "aj"),
+                ("Aportes irrevocables", pb["apirr"], None), ("Reservas", pb["resleg"], None),
+                ("Resultados no asignados", pb["rna"], None)]
+    for lab, v, k in filas_pn:
+        r += 1
+        ws.cell(r, 1, lab)
+        num(ws, r, 2, v)
+        ws.cell(r, 3, f"={cof_ref}").number_format = CF
+        if k == "cap":
+            ws.cell(r, 4, f"=B{r}").number_format = NF
+            ws.cell(r, 5, "Se mantiene nominal; su ajuste va a «Ajuste de capital»").font = Font(italic=True, size=8)
+        elif k == "aj":
+            ws.cell(r, 4, f"=(B{r - 1}+B{r})*C{r}-B{r - 1}").number_format = NF
+            ws.cell(r, 5, f"=D{r}-B{r}").number_format = NF
+        else:
+            ws.cell(r, 4, f"=B{r}*C{r}").number_format = NF
+            ws.cell(r, 5, f"=D{r}-B{r}").number_format = NF
+    r += 1
+    ws.cell(r, 1, "Patrimonio neto al inicio").font = B
+    for c in (2, 4, 5):
+        L = "ABCDE"[c - 1]
+        cell = ws.cell(r, c, f"=SUM({L}{first}:{L}{r - 1})")
+        cell.number_format = NF
+        cell.font = B
+        cell.border = thin
+    pn_ini_row = r
+
+    # 3. Comparativos
+    r += 2
+    ws.cell(r, 1, "3. Reexpresión de las cifras comparativas (EECC anterior)").font = B
+    r += 1
+    hdr(ws, r, ["Rubro", f"Saldo al {ca}", "Coeficiente", "Reexpresado"])
+    comp = [("Caja y bancos", "caja"), ("Inversiones", "inv"), ("Créditos por ventas", "cv"),
+            ("Otros créditos", "oc"), ("Bienes de cambio", "bc"), ("Bienes de uso", "bu"),
+            ("Deudas comerciales", "dc"), ("Préstamos", "prest"), ("Remuneraciones y cargas sociales", "rem"),
+            ("Cargas fiscales", "df"), ("Deudas con socios", "ds"), ("Otras deudas", "od"),
+            ("Patrimonio neto", "pn"), ("Ventas", "ventas"), ("Costo", "costo"),
+            ("Gastos de comercialización", "gcom"), ("Gastos de administración", "gadm"),
+            ("Resultados financieros y por tenencia", "rfyt"), ("Impuesto a las ganancias", "ig"),
+            ("Resultado del ejercicio", "res")]
+    for lab, k in comp:
+        v = g(k)
+        if k in ("costo", "gcom", "gadm", "ig"):
+            v = abs(v)
+        if not v:
+            continue
+        r += 1
+        ws.cell(r, 1, lab)
+        num(ws, r, 2, v)
+        ws.cell(r, 3, f"={cof_ref}").number_format = CF
+        ws.cell(r, 4, f"=B{r}*C{r}").number_format = NF
+
+    # 4. Bienes de uso
+    if X["bu"]:
+        r += 2
+        ws.cell(r, 1, "4. Bienes de uso — reexpresión y amortizaciones").font = B
+        r += 1
+        hdr(ws, r, ["Tipo de bien", f"Origen al {ca}", "Coeficiente", "Origen reexpresado", "Altas (nominal)",
+                    "Coef. medio", "Altas reexpresadas", f"Amort. acum. al {ca}", "Amort. acum. reexpresada",
+                    "Tasa %", "Amortización del ejercicio", "", "Neto al cierre"])
+        b0 = r + 1
+        for row in X["bu"]:
+            r += 1
+            ws.cell(r, 1, row["tipo"])
+            num(ws, r, 2, row["o_ant"])
+            ws.cell(r, 3, f"={cof_ref}").number_format = CF
+            ws.cell(r, 4, f"=B{r}*C{r}").number_format = NF
+            num(ws, r, 5, row["altas_nom"])
+            ws.cell(r, 6, f"={cofm_ref}").number_format = CF
+            ws.cell(r, 7, f"=E{r}*F{r}").number_format = NF
+            num(ws, r, 8, row["a_ant"])
+            ws.cell(r, 9, f"=H{r}*C{r}").number_format = NF
+            num(ws, r, 10, row["tasa"], "0.00", fill=INP)
+            ws.cell(r, 11, f"=MIN((D{r}+G{r})*J{r}/100,MAX(D{r}+G{r}-I{r},0))").number_format = NF
+            ws.cell(r, 13, f"=D{r}+G{r}-I{r}-K{r}").number_format = NF
+        r += 1
+        ws.cell(r, 1, "Totales").font = B
+        for L in "BDEGHIKM":
+            c = ws[f"{L}{r}"]
+            c.value = f"=SUM({L}{b0}:{L}{r - 1})"
+            c.number_format = NF
+            c.font = B
+            c.border = thin
+        ws.cell(r + 1, 1, "Año de alta completo. Altas reexpresadas con coeficiente medio del ejercicio "
+                          "(simplificación).").font = Font(italic=True, size=8)
+        r += 1
+
+    # 5. Determinación del RECPAM
+    r += 2
+    ws.cell(r, 1, "5. Determinación del resultado y del RECPAM (por diferencia)").font = B
+    r += 1
+    hdr(ws, r, ["Concepto", "Importe"])
+    det = [("Activo al cierre", C["ta"]), ("Pasivo al cierre", -C["tp"]), ("▸ Patrimonio neto al cierre", C["pn"]),
+           ("(−) Patrimonio neto al inicio reexpresado", -I["pn"]), ("(−) Aportes del ejercicio", -X["aportes"]),
+           ("▸ RESULTADO DEL EJERCICIO", R["res"]), ("", None),
+           ("Ventas", R["ventas"]), ("(−) Costo", -R["costo"]), ("(−) Gastos de comercialización", -R["gcom"]),
+           ("(−) Gastos de administración (incluye amortizaciones)", -R["gadm"]),
+           ("Otros ingresos y egresos", R["oi"]), ("(−) Impuesto a las ganancias", -R["ig"]),
+           ("▸ Resultado sin RFyT", R["res"] - R["rfyt"]), ("", None),
+           ("RESULTADOS FINANCIEROS Y POR TENENCIA (incl. RECPAM) = Resultado − Resultado sin RFyT", R["rfyt"])]
+    for lab, v in det:
+        r += 1
+        ws.cell(r, 1, lab)
+        if v is not None:
+            bold = lab.startswith("▸") or lab.startswith("RESULTADOS")
+            num(ws, r, 2, v, bold=bold)
+            if bold:
+                ws.cell(r, 1).font = B
+                ws.cell(r, 2).border = thin
+
+    # 6. Control de razonabilidad
+    r += 2
+    ws.cell(r, 1, "6. Control de razonabilidad del RECPAM (posición monetaria)").font = B
+    r += 1
+    hdr(ws, r, ["Concepto", f"Inicio (al {ca}, nominal)", f"Cierre (al {cc})"])
+    pmn_i = g("caja") + g("cv") + g("oc") - (g("dc") + g("prest") + g("rem") + g("df") + g("ds") + g("od"))
+    pmn_c = C["caja"] + C["cv"] + C["oc"] - C["tp"]
+    rows6 = [("Activos monetarios (caja, créditos)", g("caja") + g("cv") + g("oc"), C["caja"] + C["cv"] + C["oc"]),
+             ("Pasivos monetarios", -(g("dc") + g("prest") + g("rem") + g("df") + g("ds") + g("od")), -C["tp"]),
+             ("Posición monetaria neta", pmn_i, pmn_c)]
+    for lab, v1, v2 in rows6:
+        r += 1
+        ws.cell(r, 1, lab)
+        num(ws, r, 2, v1, bold=lab.startswith("Posición"))
+        num(ws, r, 3, v2, bold=lab.startswith("Posición"))
+    pmn_row = r
+    r += 1
+    ws.cell(r, 1, "RECPAM estimado sobre la posición de inicio  = −PMN inicio × (coef − 1)")
+    ws.cell(r, 2, f"=-B{pmn_row}*({cof_ref}-1)").number_format = NF
+    est_row = r
+    r += 1
+    ws.cell(r, 1, "RFyT determinado (punto 5)")
+    num(ws, r, 2, R["rfyt"])
+    r += 1
+    ws.cell(r, 1, "Diferencia (movimientos del ejercicio, resultados nominales)").font = B
+    c = ws.cell(r, 2, f"=B{r - 1}-B{est_row}")
+    c.number_format = NF
+    c.font = B
+    c.border = thin
+
+    # ───────────────────────── IMPOSITIVO ─────────────────────────
+    ws = wb.create_sheet("PT AxI impositivo")
+    for col, w in zip("ABCDEFG", [52, 18, 12, 18, 14, 18, 40]):
+        ws.column_dimensions[col].width = w
+    titulo(ws, "PAPEL DE TRABAJO — AJUSTE POR INFLACIÓN IMPOSITIVO (Ley de Impuesto a las Ganancias, "
+               "arts. 105 a 108 t.o. 2019)")
+    r = 5
+    ws.cell(r, 1, "Celdas en amarillo: completar o revisar. Se parte de valores contables del EECC anterior como "
+                  "aproximación de los valores impositivos.").font = Font(italic=True, size=9, color="9C5700")
+    r += 2
+    ws.cell(r, 1, "1. Parámetros").font = B
+    r += 1
+    ws.cell(r, 1, f"Variación del IPC (INDEC) del ejercicio — coeficiente {ca} → {cc}")
+    num(ws, r, 2, X["cof"], CF, True, INP)
+    ipc_ref = f"$B${r}"
+    r += 1
+    ws.cell(r, 1, "Variación acumulada del IPC en los 36 meses anteriores al cierre (%)")
+    num(ws, r, 2, None, "0.00", fill=INP)
+    v36 = f"B{r}"
+    r += 1
+    ws.cell(r, 1, "¿Procede el ajuste? (variación 36 meses > 100%)")
+    ws.cell(r, 2, f'=IF({v36}="","Completar",IF({v36}>100,"SÍ","NO"))').font = B
+    proc_ref = f"$B${r}"
+    r += 1
+    ws.cell(r, 1, "Imputación en el ejercicio (%) — 100% para ejercicios iniciados desde el 01/01/2021")
+    num(ws, r, 2, 100, "0", fill=INP)
+    imp_ref = f"$B${r}"
+
+    # 2. Ajuste estático
+    r += 2
+    ws.cell(r, 1, f"2. Ajuste estático — activo y pasivo al inicio del ejercicio ({ca})").font = B
+    r += 1
+    hdr(ws, r, ["Rubro", "Saldo al inicio", "Computa (S/N)", "Importe computable", "", "", "Observación"])
+    socios_ini = 0.0
+    if tp:
+        for n, s_, k in X["cuentas"]:
+            if k == "oc" and re.search(r"socio|director|accionista", nkey(n)):
+                pv = prior.cuenta(n)
+                socios_ini += pv or 0.0
+    act = [("Caja y bancos", g("caja"), "S", ""),
+           ("Inversiones", g("inv"), "S", "Excluir acciones y participaciones en sociedades"),
+           ("Créditos por ventas", g("cv"), "S", ""),
+           ("Otros créditos (sin saldos de socios)", g("oc") - socios_ini, "S", ""),
+           ("Saldos deudores de socios / accionistas", socios_ini, "N", "Se excluyen (art. 106 inc. a)"),
+           ("Bienes de cambio", g("bc"), "S", "Revisar criterio de valuación impositiva"),
+           ("Bienes de uso", g("bu"), "N", "Excluidos: se actualizan por las normas específicas"),
+           ("Intangibles / gastos de organización", 0.0, "N", "Excluidos")]
+    r += 1
+    ws.cell(r, 1, "ACTIVO").font = B
+    a0 = r + 1
+    for lab, v, comp_, obs in act:
+        r += 1
+        ws.cell(r, 1, lab)
+        num(ws, r, 2, v)
+        c = ws.cell(r, 3, comp_)
+        c.fill = INP
+        c.alignment = Alignment(horizontal="center")
+        ws.cell(r, 4, f'=IF(UPPER(C{r})="S",B{r},0)').number_format = NF
+        ws.cell(r, 7, obs).font = Font(size=8, italic=True)
+    r += 1
+    ws.cell(r, 1, "Activo computable").font = B
+    c = ws.cell(r, 4, f"=SUM(D{a0}:D{r - 1})")
+    c.number_format = NF
+    c.font = B
+    c.border = thin
+    act_row = r
+    pas = [("Deudas comerciales", g("dc"), "S", ""), ("Préstamos", g("prest"), "S", ""),
+           ("Remuneraciones y cargas sociales", g("rem"), "S", ""),
+           ("Cargas fiscales", g("df"), "S", "Incluye la provisión del impuesto a las ganancias"),
+           ("Deudas con socios", g("ds"), "S", ""), ("Otras deudas", g("od"), "S", ""),
+           ("Previsiones no deducibles", 0.0, "N", "Excluidas")]
+    r += 1
+    ws.cell(r, 1, "PASIVO").font = B
+    p0 = r + 1
+    for lab, v, comp_, obs in pas:
+        r += 1
+        ws.cell(r, 1, lab)
+        num(ws, r, 2, v)
+        c = ws.cell(r, 3, comp_)
+        c.fill = INP
+        c.alignment = Alignment(horizontal="center")
+        ws.cell(r, 4, f'=IF(UPPER(C{r})="S",B{r},0)').number_format = NF
+        ws.cell(r, 7, obs).font = Font(size=8, italic=True)
+    r += 1
+    ws.cell(r, 1, "Pasivo computable").font = B
+    c = ws.cell(r, 4, f"=SUM(D{p0}:D{r - 1})")
+    c.number_format = NF
+    c.font = B
+    c.border = thin
+    pas_row = r
+    r += 1
+    ws.cell(r, 1, "Diferencia (activo − pasivo computable)").font = B
+    c = ws.cell(r, 4, f"=D{act_row}-D{pas_row}")
+    c.number_format = NF
+    c.font = B
+    dif_row = r
+    r += 1
+    ws.cell(r, 1, "AJUSTE ESTÁTICO = −(activo − pasivo) × (IPC − 1)").font = B
+    c = ws.cell(r, 4, f"=-D{dif_row}*({ipc_ref}-1)")
+    c.number_format = NF
+    c.font = B
+    c.fill = T
+    est_ref = f"D{r}"
+    ws.cell(r, 7, "Negativo si activo > pasivo (quebranto); positivo si pasivo > activo").font = Font(size=8, italic=True)
+
+    # 3. Ajuste dinámico
+    r += 2
+    ws.cell(r, 1, "3. Ajuste dinámico — movimientos del ejercicio").font = B
+    r += 1
+    hdr(ws, r, ["Concepto", "Importe", "Mes (aaaa-mm)", "", "Coef. mes → cierre", "Ajuste", "Signo / observación"])
+    movs = []
+    if X["aportes"]:
+        movs.append(("Aportes de capital del ejercicio", X["aportes"], -1, "Aportes: ajuste negativo"))
+    movs += [("Retiros / dividendos pagados", 0.0, 1, "Ajuste positivo"),
+             ("Préstamos / anticipos a socios", 0.0, 1, "Ajuste positivo"),
+             ("Adquisición de acciones / bienes excluidos", 0.0, 1, "Ajuste positivo"),
+             ("Venta de bienes excluidos", 0.0, -1, "Ajuste negativo")]
+    d0 = r + 1
+    for lab, v, sg, obs in movs:
+        r += 1
+        ws.cell(r, 1, lab)
+        num(ws, r, 2, v, fill=INP)
+        ws.cell(r, 3).fill = INP
+        num(ws, r, 5, None, CF, fill=INP)
+        ws.cell(r, 6, f'=IF(E{r}="",0,{sg}*B{r}*(E{r}-1))').number_format = NF
+        ws.cell(r, 7, obs).font = Font(size=8, italic=True)
+    for _ in range(3):
+        r += 1
+        ws.cell(r, 1, "(otro movimiento)").font = Font(italic=True, color="999999")
+        for col in (2, 3, 5):
+            ws.cell(r, col).fill = INP
+        ws.cell(r, 6, f'=IF(E{r}="",0,B{r}*(E{r}-1))').number_format = NF
+        ws.cell(r, 7, "Cargar con signo: + positivo / − negativo").font = Font(size=8, italic=True)
+    r += 1
+    ws.cell(r, 1, "AJUSTE DINÁMICO").font = B
+    c = ws.cell(r, 6, f"=SUM(F{d0}:F{r - 1})")
+    c.number_format = NF
+    c.font = B
+    c.fill = T
+    din_ref = f"F{r}"
+
+    # 4. Resultado
+    r += 2
+    ws.cell(r, 1, "4. Resultado del ajuste por inflación impositivo").font = B
+    r += 1
+    ws.cell(r, 1, "Ajuste estático")
+    ws.cell(r, 4, f"={est_ref}").number_format = NF
+    r += 1
+    ws.cell(r, 1, "Ajuste dinámico")
+    ws.cell(r, 4, f"={din_ref}").number_format = NF
+    r += 1
+    ws.cell(r, 1, "AJUSTE POR INFLACIÓN DEL EJERCICIO").font = B
+    c = ws.cell(r, 4, f"=D{r - 2}+D{r - 1}")
+    c.number_format = NF
+    c.font = B
+    c.border = thin
+    tot = f"D{r}"
+    r += 1
+    ws.cell(r, 1, "Imputable en el ejercicio (si procede)").font = B
+    c = ws.cell(r, 4, f'=IF({proc_ref}="SÍ",{tot}*{imp_ref}/100,0)')
+    c.number_format = NF
+    c.font = B
+    c.fill = T
+    r += 1
+    ws.cell(r, 1, "Positivo: se suma a la ganancia neta imponible; negativo: se resta (quebranto por inflación).") \
+        .font = Font(italic=True, size=8)
 
 
 def subtitulo(a, X):
