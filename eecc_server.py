@@ -397,7 +397,10 @@ def _fill_informe(template_path: str, out_path: str,
         sipa_val = float(sipa_txt.replace(",", ".")) if sipa_txt else None
     except ValueError:
         sipa_val = None
-    sipa_fmt     = _fmt_ar(sipa_val) if sipa_val is not None else "[COMPLETAR SIPA]"
+    # n8n manda vacío cuando el campo SIPA de Notion está en 0 → se informa $ 0,00
+    if sipa_val is None:
+        sipa_val = 0.0
+    sipa_fmt     = _fmt_ar(sipa_val)
 
     replacements = {
         "{{EMPRESA}}.": f"{empresa}.",
