@@ -9,3 +9,4 @@ xlsx2html
 weasyprint
 mammoth
 cloudconvert
+reportlab

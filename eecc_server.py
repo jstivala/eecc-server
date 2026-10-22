@@ -12,7 +12,7 @@ import uvicorn
 
 app = FastAPI(title="EECC Generator")
 
-GEN_SCRIPT       = Path(__file__).parent / "gen_eecc_v4.py"
+GEN_SCRIPT       = Path(__file__).parent / "gen_eecc_v9.py"
 INFORME_TEMPLATE = Path(__file__).parent / "informe_template.docx"
 
 MONTHS_ES = {
@@ -69,6 +69,8 @@ async def generar(
             "--cof",           str(cof),
             "--cap-nominal",   str(cap_nominal),
             "--ss-actual",     ss_act_path,
+            "--domicilio",     domicilio,
+            "--matricula-igj", matricula_igj,
             "--output",        out_path,
         ]
 
@@ -78,54 +80,54 @@ async def generar(
             if os.path.getsize(prev_path) > 100:
                 cmd += ["--eecc-anterior", prev_path]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         if result.returncode != 0:
-            raise HTTPException(status_code=500,
-                detail=f"Error en gen_eecc: {result.stderr}\n{result.stdout}")
+            msg = (result.stderr or result.stdout or "").strip()
+            # el generador deja el motivo en una línea "ERROR: ..." → va directo a Notas en Notion
+            m = re.search(r"ERROR: (.+)", msg)
+            raise HTTPException(status_code=422 if m else 500,
+                                detail=(m.group(1) if m else f"Error en el generador: {msg[-1500:]}"))
 
         if not os.path.exists(out_path):
             raise HTTPException(status_code=500, detail="El script no generó el archivo")
 
-        empresa_slug = empresa.replace(" ", "_").replace(".", "")[:30]
+        meta_path = out_path[:-5] + ".meta.json"
+        meta = {}
+        if os.path.exists(meta_path):
+            import json
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+
         cuit_slug    = cuit.replace("-", "").replace(" ", "")
         year         = fecha_cierre.strip()[:4]
         xlsx_name    = f"EECC_{cuit_slug}_{year}.xlsx"
         pdf_name     = f"EECC_{cuit_slug}_{year}.pdf"
-        excel_pdf    = os.path.join(tmp, "excel.pdf")
+        eecc_pdf     = meta.get("pdf") or out_path[:-5] + ".pdf"
         informe_pdf  = os.path.join(tmp, "informe.pdf")
         merged_pdf   = os.path.join(tmp, pdf_name)
 
-        # 1. Excel → PDF
-        cc_key = os.environ.get("CLOUDCONVERT_API_KEY", "")
-        lo = _find_libreoffice()
-        if cc_key:
-            try:
-                _cloudconvert_pdf(cc_key, out_path, excel_pdf)
-            except Exception as cc_err:
-                print(f"[CloudConvert] falló ({cc_err}), usando fallback")
-                if lo:
-                    _libreoffice_convert(lo, out_path, tmp, excel_pdf)
-                else:
-                    _xlsx_to_pdf(out_path, excel_pdf)
-        elif lo:
-            _libreoffice_convert(lo, out_path, tmp, excel_pdf)
-        else:
-            _xlsx_to_pdf(out_path, excel_pdf)
+        # 1. El PDF de los estados lo genera el script (ReportLab, formato argentino).
+        #    Si por algún motivo no está, se convierte el Excel como antes.
+        if not os.path.exists(eecc_pdf):
+            eecc_pdf = os.path.join(tmp, "excel.pdf")
+            _xlsx_to_pdf(out_path, eecc_pdf)
 
         # 2. Informe Word → rellenar → PDF
+        lo = _find_libreoffice()
         if INFORME_TEMPLATE.exists():
             informe_filled = os.path.join(tmp, "informe_filled.docx")
             _fill_informe(str(INFORME_TEMPLATE), informe_filled,
                           empresa, cuit, domicilio, matricula_igj,
-                          fecha_cierre.strip(), sipa_monto)
+                          fecha_cierre.strip(), sipa_monto,
+                          notas_rango=meta.get("notas_rango", "1 a 3"),
+                          anexos_rango=meta.get("anexos_rango", "I a II"))
             if lo:
                 _libreoffice_convert(lo, informe_filled, tmp, informe_pdf)
             else:
                 _docx_to_pdf(informe_filled, informe_pdf)
 
         # 3. Mergear PDFs
-        # Las notas ya están en la hoja "Notas" del Excel — no se genera notas.pdf separado
-        pdfs_to_merge = [excel_pdf]
+        pdfs_to_merge = [eecc_pdf]
         if os.path.exists(informe_pdf):
             pdfs_to_merge.append(informe_pdf)
         _merge_pdfs(pdfs_to_merge, merged_pdf)
@@ -368,9 +370,20 @@ def _docx_to_pdf(docx_path: str, pdf_path: str):
     HTML(string=full_html).write_pdf(pdf_path)
 
 
+def _fmt_ar(v: float) -> str:
+    s = f"{abs(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"-{s}" if v < 0 else s
+
+
+def _fmt_cuit(c: str) -> str:
+    d = re.sub(r"\D", "", c or "")
+    return f"{d[:2]}-{d[2:10]}-{d[10:]}" if len(d) == 11 else c
+
+
 def _fill_informe(template_path: str, out_path: str,
                   empresa: str, cuit: str, domicilio: str, matricula_igj: str,
-                  fecha_cierre: str, sipa_monto: str):
+                  fecha_cierre: str, sipa_monto: str,
+                  notas_rango: str = "1 a 3", anexos_rango: str = "I a II"):
     """Rellena el template del Informe de Auditoría con los datos del cliente."""
     from docx import Document
 
@@ -379,12 +392,19 @@ def _fill_informe(template_path: str, out_path: str,
     mes_anio     = f"{MONTHS_ES[fecha.month]} de {fecha.year}"
     today        = date.today()
     fecha_inf    = f"{today.day} de {MONTHS_ES[today.month]} de {today.year}"
-    sipa_fmt     = sipa_monto.strip() if sipa_monto.strip() else "[COMPLETAR SIPA]"
+    sipa_txt     = (sipa_monto or "").strip()
+    try:
+        sipa_val = float(sipa_txt.replace(",", ".")) if sipa_txt else None
+    except ValueError:
+        sipa_val = None
+    sipa_fmt     = _fmt_ar(sipa_val) if sipa_val is not None else "[COMPLETAR SIPA]"
 
     replacements = {
         "{{EMPRESA}}.": f"{empresa}.",
         "{{EMPRESA}}":  empresa,
-        "{{CUIT}}":     cuit,
+        "{{CUIT}}":     _fmt_cuit(cuit),
+        "{{NOTAS_RANGO}}":  notas_rango,
+        "{{ANEXOS_RANGO}}": anexos_rango,
         "{{DOMICILIO}}":          domicilio or "[DOMICILIO]",
         "{{MATRICULA_IGJ}}":      matricula_igj or "[MATRÍCULA]",
         "{{FECHA_CIERRE_LARGA}}": fecha_larga,
