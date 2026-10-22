@@ -568,6 +568,7 @@ def calcular(a, cuentas, prior):
                     f"({fmt_ar(a.cap_nominal)}). Se usó el de Notion.")
     aj_p, apirr_p, res_p, rna_p = suma("aj", -1), suma("apirr", -1), suma("resleg", -1), suma("rna", -1)
     pn_ss = cap_ss + aj_p + apirr_p + res_p + rna_p
+    ss_pn = dict(cap=cap_ss, aj=aj_p, apirr=apirr_p, resleg=res_p, rna=rna_p)
     aportes_nom = 0.0
     if tiene_prior:
         pn_prior = prior.g("pn")
@@ -676,7 +677,7 @@ def calcular(a, cuentas, prior):
     if C["pn"] < 0:
         warn.append(f"El patrimonio neto al cierre es negativo ({fmt_ar(C['pn'])}).")
 
-    return dict(cuentas=clas, C=C, A=A, I=I, R=R, E=E, AE=AE, bu=bu_rows, amort_ej=amort_ej, pn_base=pn_base,
+    return dict(cuentas=clas, C=C, A=A, I=I, R=R, E=E, AE=AE, bu=bu_rows, amort_ej=amort_ej, pn_base=pn_base, ss_pn=ss_pn, amort_booked=amort_booked,
                 aportes=aportes_h, inicio=inicio, cierre=cierre, cierre_ant=cierre_ant,
                 tiene_prior=tiene_prior, moneda_ext=moneda_ext, warn=warn, cof=COF,
                 primer_rt54=not (tiene_prior and prior.normas_rt54),
@@ -1145,6 +1146,7 @@ def escribir_xlsx(path, a, X, S, notas):
     ws.sheet_properties.pageSetUpPr.fitToPage = True
 
     escribir_papeles(wb, a, X)
+    escribir_asientos(wb, a, X)
 
     # Control (no va al PDF)
     ws = wb.create_sheet("Control")
@@ -1551,6 +1553,194 @@ def escribir_papeles(wb, a, X):
     r += 1
     ws.cell(r, 1, "Positivo: se suma a la ganancia neta imponible; negativo: se resta (quebranto por inflación).") \
         .font = Font(italic=True, size=8)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Asientos para llevar el sistema al balance presentado
+# ════════════════════════════════════════════════════════════════════════════
+def armar_asientos(a, X):
+    """Devuelve (asientos, control). Cada asiento: dict(n, titulo, lineas=[(cuenta, debe, haber, nueva)])."""
+    cuentas = X["cuentas"]
+    nombres = {nkey(n): n for n, _, _ in cuentas}
+    saldo = {n: s for n, s, _ in cuentas}          # saldo deudor positivo
+
+    def cta(preferidas, nueva):
+        for p in preferidas:
+            for kn, n in nombres.items():
+                if re.search(p, kn):
+                    return n, False
+        return nueva, True
+
+    asientos = []
+
+    def asiento(titulo, movs):
+        """movs: lista de (cuenta, importe_deudor, es_nueva); positivo = Debe."""
+        lineas = []
+        for c, imp, nueva in movs:
+            imp = round(imp, 2)
+            if abs(imp) < 0.005:
+                continue
+            lineas.append((c, imp if imp > 0 else 0.0, -imp if imp < 0 else 0.0, nueva))
+            saldo[c] = saldo.get(c, 0.0) + imp
+        if lineas:
+            asientos.append(dict(n=len(asientos) + 1, titulo=titulo, lineas=lineas))
+
+    recpam, recpam_n = cta([r"^recpam$", r"recpam"], "RECPAM")
+    rna_c, rna_n = cta([r"resultados? no asignados?", r"^rna$"], "Resultados no asignados")
+
+    # 1. Reclasificación del resultado del ejercicio anterior a Resultados no asignados
+    movs = []
+    for n, s, k in cuentas:
+        if k == "rna" and n != rna_c and abs(s) > 0.005:
+            movs += [(n, -s, False), (rna_c, s, rna_n)]
+    asiento("Reclasificación del resultado del ejercicio anterior a Resultados no asignados", movs)
+
+    # 2. Reexpresión del PN de inicio
+    if X["tiene_prior"]:
+        I, sp = X["I"], X["ss_pn"]
+        aj_c, aj_n = cta([r"ajuste (de|del) capital"], "Ajuste de capital")
+        movs = [(aj_c, -(I["aj"] - sp["aj"]), aj_n)]
+        if abs(I["apirr"] - sp["apirr"]) > 0.005:
+            c, nv = cta([r"ajuste.*aportes"], "Ajuste de aportes irrevocables")
+            movs.append((c, -(I["apirr"] - sp["apirr"]), nv))
+        if abs(I["resleg"] - sp["resleg"]) > 0.005:
+            c, nv = cta([r"^reserva"], "Reserva legal")
+            movs.append((c, -(I["resleg"] - sp["resleg"]), nv))
+        movs.append((rna_c, -(I["rna"] - sp["rna"]), rna_n))
+        movs.append((recpam, -sum(m[1] for m in movs), recpam_n))
+        asiento(f"Reexpresión del patrimonio neto al inicio (coeficiente {X['cof']:.5f}".replace(".", ",") + ")", movs)
+
+    # 3. Reexpresión de bienes de uso y 4. amortizaciones del ejercicio
+    movs3, movs4 = [], []
+    gasto_c, gasto_n = cta([r"^amortizacion(es)? (de )?bienes", r"^amortizacion(?!.*acum)"], "Amortizaciones bienes de uso")
+    for row in X["bu"]:
+        orig = [(n, s) for n, s, k in cuentas if k == "bu" and tipo_bu(n) == row["tipo"] and
+                not re.search(r"amort|depreciacion", nkey(n))]
+        acum = [(n, s) for n, s, k in cuentas if k == "bu" and tipo_bu(n) == row["tipo"] and
+                re.search(r"amort|depreciacion", nkey(n))]
+        o_c, o_n = (orig[0][0], False) if orig else (row["tipo"], True)
+        a_c, a_n = (acum[0][0], False) if acum else (f"Amortización acumulada {row['tipo'].lower()}", True)
+        o_ss = sum(v for _, v in orig)
+        a_ss = sum(v for _, v in acum)            # saldo acreedor → negativo
+        d_orig = row["o_cie"] - o_ss
+        d_acum = -row["a_ini"] - a_ss
+        if X["amort_booked"]:
+            d_acum = -(row["a_cie"]) - a_ss
+        movs3 += [(o_c, d_orig, o_n), (a_c, d_acum, a_n)]
+        if not X["amort_booked"] and row["amort"]:
+            movs4 += [(gasto_c, row["amort"], gasto_n), (a_c, -row["amort"], a_n)]
+    if movs3:
+        movs3.append((recpam, -sum(m[1] for m in movs3), recpam_n))
+        asiento("Reexpresión de bienes de uso y de sus amortizaciones acumuladas al inicio", movs3)
+    asiento("Amortizaciones de bienes de uso del ejercicio", movs4)
+
+    # 5. Refundición de cuentas de resultado
+    res_c, res_n = cta([r"^resultados? del ejercicio$"], "Resultado del ejercicio")
+    movs, tot = [], 0.0
+    for c, v in list(saldo.items()):
+        k = clasificar(c)
+        if k in ("ventas", "costo", "gcom", "gadm", "amort", "rfyt", "oi", "ig") and abs(v) > 0.005:
+            movs.append((c, -v, c in (gasto_c, recpam) and (gasto_n if c == gasto_c else recpam_n)))
+            tot += v
+    if movs:
+        movs.append((res_c, tot, res_n))
+        asiento("Refundición de cuentas de resultado (si el sistema no la hace automáticamente)", movs)
+
+    # Control: sistema después de los asientos vs. balance presentado
+    rub = {}
+    for c, v in saldo.items():
+        k = clasificar(c)
+        if k == "caja" and v < -0.5:
+            k = "prest"
+        rub[k] = rub.get(k, 0.0) + v
+    C = X["C"]
+    ctrl = []
+    for k, lab, sg in [("caja", "Caja y bancos", 1), ("inv", "Inversiones", 1), ("cv", "Créditos por ventas", 1),
+                       ("oc", "Otros créditos", 1), ("bc", "Bienes de cambio", 1), ("bu", "Bienes de uso", 1),
+                       ("dc", "Deudas comerciales", -1), ("prest", "Préstamos", -1),
+                       ("rem", "Remuneraciones y cargas sociales", -1), ("df", "Cargas fiscales", -1),
+                       ("ds", "Deudas con socios", -1), ("od", "Otras deudas", -1)]:
+        sis = sg * rub.get(k, 0.0)
+        if abs(sis) > 0.005 or abs(C.get(k, 0)) > 0.005:
+            ctrl.append((lab, sis, C.get(k, 0.0)))
+    pn_sis = -sum(rub.get(k, 0.0) for k in ("cap", "aj", "apirr", "resleg", "rna"))
+    ctrl.append(("Patrimonio neto", pn_sis, C["pn"]))
+    return asientos, ctrl
+
+
+def escribir_asientos(wb, a, X):
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    NF = '#,##0.00;(#,##0.00);"-"'
+    B = Font(bold=True)
+    H = PatternFill("solid", fgColor="1F3864")
+    NEW = PatternFill("solid", fgColor="FFF2CC")
+    thin = Border(top=Side(style="thin", color="999999"))
+    asientos, ctrl = armar_asientos(a, X)
+    X["asientos"] = asientos
+    ws = wb.create_sheet("Asientos de ajuste")
+    for col, w in zip("ABCDEF", [8, 12, 52, 18, 18, 30]):
+        ws.column_dimensions[col].width = w
+    ws.cell(1, 1, a.empresa).font = Font(bold=True, size=12)
+    ws.cell(2, 1, "ASIENTOS A REGISTRAR PARA QUE EL SISTEMA COINCIDA CON EL BALANCE PRESENTADO").font = Font(bold=True,
+                                                                                                         size=11)
+    ws.cell(3, 1, "Parten del sumas y saldos adjuntado (antes del cierre, en valores históricos). Cuentas en amarillo: "
+                  "no existen en el sumas y saldos, hay que darlas de alta en el plan de cuentas.") \
+        .font = Font(italic=True, size=9)
+    r = 5
+    fecha = X["cierre"].strftime("%d/%m/%Y")
+    for asi in asientos:
+        r += 1
+        ws.cell(r, 1, f"Asiento {asi['n']}").font = B
+        ws.cell(r, 3, asi["titulo"]).font = B
+        r += 1
+        for j, h in enumerate(["N°", "Fecha", "Cuenta", "Debe", "Haber", ""]):
+            c = ws.cell(r, j + 1, h)
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = H
+        r0 = r + 1
+        for cta_, d, h, nueva in sorted(asi["lineas"], key=lambda l: l[1] == 0):
+            r += 1
+            ws.cell(r, 1, asi["n"])
+            ws.cell(r, 2, fecha)
+            c = ws.cell(r, 3, ("      a " if not d else "") + cta_)
+            if nueva:
+                c.fill = NEW
+                ws.cell(r, 6, "cuenta nueva").font = Font(italic=True, size=8)
+            if d:
+                ws.cell(r, 4, round(d, 2)).number_format = NF
+            if h:
+                ws.cell(r, 5, round(h, 2)).number_format = NF
+        r += 1
+        ws.cell(r, 3, "Totales").font = B
+        for col in (4, 5):
+            L = "D" if col == 4 else "E"
+            c = ws.cell(r, col, f"=SUM({L}{r0}:{L}{r - 1})")
+            c.number_format = NF
+            c.font = B
+            c.border = thin
+        ws.cell(r, 6, f'=IF(ROUND(D{r}-E{r},2)=0,"✓ balanceado","✗ revisar")').font = B
+        r += 1
+    if not asientos:
+        r += 1
+        ws.cell(r, 1, "No hacen falta asientos: el sumas y saldos ya coincide con el balance.")
+    if X["R"]["usa_inv"]:
+        r += 2
+        ws.cell(r, 1, "Bienes de cambio: el costo se calculó por diferencia de inventario. Registrar el asiento de "
+                      "costo de ventas según el criterio del sistema (inventario periódico o permanente).") \
+            .font = Font(italic=True, color="9C5700")
+    r += 2
+    ws.cell(r, 1, "Control: saldos del sistema después de los asientos vs. balance presentado").font = B
+    r += 1
+    for j, h in enumerate(["", "", "Rubro", "Sistema", "Balance", "Diferencia"]):
+        c = ws.cell(r, j + 1, h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = H
+    for lab, sis, bal in ctrl:
+        r += 1
+        ws.cell(r, 3, lab)
+        ws.cell(r, 4, round(sis, 2)).number_format = NF
+        ws.cell(r, 5, round(bal, 2)).number_format = NF
+        ws.cell(r, 6, f"=D{r}-E{r}").number_format = NF
 
 
 def subtitulo(a, X):
