@@ -308,13 +308,20 @@ def leer_ss(path):
 # Lectura del EECC anterior (PDF)
 # ════════════════════════════════════════════════════════════════════════════
 def texto_pdf(path):
-    """pdftotext -layout respeta columnas sin partir los números; pdfplumber como respaldo."""
+    """pdftotext -layout o pypdf (modo layout): respetan columnas sin partir los números."""
     import shutil
     import subprocess
     if shutil.which("pdftotext"):
         out = subprocess.run(["pdftotext", "-layout", path, "-"], capture_output=True, text=True).stdout
         if out.strip():
             return out
+    try:
+        import pypdf
+        out = "\n".join(pg.extract_text(extraction_mode="layout") or "" for pg in pypdf.PdfReader(path).pages)
+        if out.strip():
+            return out
+    except Exception:
+        pass
     import pdfplumber
     with pdfplumber.open(path) as pdf:
         return "\n".join((p.extract_text() or "") for p in pdf.pages)
@@ -421,7 +428,7 @@ class Prior:
     def _leer_anexo_bu(self):
         ini = None
         for i, nl in enumerate(self.nlines):
-            if "valores de incorporacion" in nl or "valores de origen" in nl:
+            if re.search(r"valores\s+de\s+(incorporacion|origen)", nl):
                 ini = i
                 break
         out = {}
@@ -499,7 +506,12 @@ def calcular(a, cuentas, prior):
             bu_ss[tipo_bu(n)] += s
     anexo_p = prior.anexo_bu if tiene_prior else {}
     if tiene_prior and P["bu"] and not anexo_p:
-        warn.append("No pude leer el Anexo I del EECC anterior: amortizaciones calculadas con tasas estándar.")
+        warn.append("No pude leer el Anexo I del EECC anterior: se tomó el neto anterior como valor de origen "
+                    "y tasas estándar. Revisar el Anexo de bienes de uso.")
+        tot_ss = sum(v for v in bu_ss.values() if v > 0) or 1.0
+        tipos = [t for t, v in bu_ss.items() if v > 0] or ["Otros bienes de uso"]
+        anexo_p = {t: dict(origen=prior.g("bu") * (bu_ss.get(t, tot_ss) / tot_ss), acum=0.0,
+                           neto=prior.g("bu") * (bu_ss.get(t, tot_ss) / tot_ss), tasa=0.0) for t in tipos}
     amort_booked = suma("amort")
     bu_rows = []
     for tipo in sorted(set(bu_ss) | set(anexo_p), key=lambda t: [x[0] for x in BU_TIPOS].index(t)
@@ -642,7 +654,7 @@ def calcular(a, cuentas, prior):
     E["bc"] = -d("bc")
     E["deu"] = d("dc") + d("rem") + d("df") + d("od")
     E["op"] = E["res"] + E["amort"] + E["cv"] + E["oc"] + E["bc"] + E["deu"]
-    E["bu"] = -(altas_tot - bajas_tot)
+    E["bu"] = -(C["bu"] + amort_ej - A.get("bu", 0.0))
     E["invs"] = -d("inv")
     E["inv"] = E["bu"] + E["invs"]
     E["aportes"] = aportes_h
