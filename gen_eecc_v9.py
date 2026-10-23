@@ -384,6 +384,7 @@ class Prior:
                 self.notas_ini = i
                 break
         self.anexo_bu = self._leer_anexo_bu()
+        self.anexo_gastos = self._leer_anexo_gastos()
         self.normas_rt54 = bool(re.search(r"tecnica\s*(n.{0,3})?\s*54|rt\s*54", norm(self.text)))
         m = re.search(r"actividad principal\s*:?\s*(.+)", self.text, re.I)
         self.actividad = ""
@@ -424,6 +425,33 @@ class Prior:
             if label == key:
                 return parse_num(m.group())
         return None
+
+    def _leer_anexo_gastos(self):
+        """Renglones del anexo de gastos (art. 64 LGS) del EECC anterior: [(concepto, total)]."""
+        ini = None
+        for i, nl in enumerate(self.nlines):
+            if re.search(r"informacion\s+requerida|art\.?\s*64", nl):
+                ini = i
+                break
+        out = []
+        if ini is None:
+            return out
+        for i in range(ini + 1, min(ini + 60, len(self.lines))):
+            nl = self.nlines[i]
+            if re.search(r"^\s*totales?\b", nl):
+                break
+            if re.search(r"notas a los estados|anexo i{1,3}\b", nl) and i > ini + 3:
+                break
+            m = re.match(r"\s*([a-z][^0-9()]*?)\s{2,}", nl)
+            if not m:
+                continue
+            lab = self.lines[i][m.start(1):m.end(1)].strip()
+            if re.search(r"^(detalle|ejercicio|gastos\s*$|total\s*$|admin|comerc|otros\s*gastos\s*$)", nkey(lab)):
+                continue
+            toks = tokens_after(self.lines[i], m.end())
+            if toks and abs(toks[0]) > 0.005:
+                out.append((lab, abs(toks[0])))
+        return out
 
     def _leer_anexo_bu(self):
         ini = None
@@ -858,29 +886,60 @@ def armar(a, X):
     # ── Anexo Gastos (art. 64 inc. b) LGS) ──
     rows = []
     gastos = {}
-    for n, s, k in X["cuentas"]:
-        if k in ("gcom", "gadm") and abs(s) > 0.005:
+    for n, s_, k in X["cuentas"]:
+        if k in ("gcom", "gadm") and abs(s_) > 0.005:
             gastos.setdefault(n, [0.0, 0.0])
-            gastos[n][0 if k == "gadm" else 1] += s
+            gastos[n][0 if k == "gadm" else 1] += s_
     if X["amort_ej"]:
         gastos["Amortización bienes de uso"] = [X["amort_ej"], 0.0]
     if not R["usa_inv"] and R["costo"]:
-        costo_rows = [(n, s) for n, s, k in X["cuentas"] if k == "costo" and abs(s) > 0.005]
+        costo_rows = [(n, s_) for n, s_, k in X["cuentas"] if k == "costo" and abs(s_) > 0.005]
     else:
         costo_rows = []
-    ttot = [0.0, 0.0, 0.0, 0.0]
-    for n, s in costo_rows:
-        rows.append(("det", n, [s, 0.0, 0.0, s]))
-        ttot = [t + x for t, x in zip(ttot, [s, 0.0, 0.0, s])]
-    for n, (ga, gc) in gastos.items():
-        vals = [0.0, ga, gc, ga + gc]
+
+    # comparativo: renglones del anexo anterior, reexpresados y apareados por nombre
+    prev = {}
+    if comp:
+        for lab, v in X["prior"].anexo_gastos:
+            kk = skey(lab)
+            if re.search(r"amortizacion", kk):
+                kk = skey("Amortización bienes de uso")
+            prev[kk] = (lab, prev.get(kk, ("", 0.0))[1] + round(v * X["cof"], 2))
+        tot_prev_ok = A.get("costo", 0) + A.get("gcom", 0) + A.get("gadm", 0) + A.get("og", 0)
+        if prev and abs(sum(v for _, v in prev.values()) - tot_prev_ok) > max(2.0, tot_prev_ok * 0.005):
+            X["warn"].append("El anexo de gastos del EECC anterior no suma igual que su estado de resultados; "
+                             "revisar la columna comparativa del anexo.")
+    usados = set()
+
+    def ant(n):
+        kk = skey(n)
+        if kk in prev:
+            usados.add(kk)
+            return prev[kk][1]
+        return 0.0
+
+    ncol = 5 if comp else 4
+    ttot = [0.0] * ncol
+    for n, s_ in costo_rows:
+        vals = [s_, 0.0, 0.0, s_] + ([ant(n)] if comp else [])
         rows.append(("det", n, vals))
         ttot = [t + x for t, x in zip(ttot, vals)]
+    for n, (ga, gc) in gastos.items():
+        vals = [0.0, ga, gc, ga + gc] + ([ant(n)] if comp else [])
+        rows.append(("det", n, vals))
+        ttot = [t + x for t, x in zip(ttot, vals)]
+    if comp:
+        for kk, (lab, v) in prev.items():
+            if kk not in usados:
+                rows.append(("det", lab, [0.0, 0.0, 0.0, 0.0, v]))
+                ttot[4] += v
+        if not prev:
+            ttot[4] = A.get("costo", 0) + A.get("gcom", 0) + A.get("gadm", 0) + A.get("og", 0)
     rows.append(("grand", "TOTALES", ttot))
     S.append(dict(key=f"Anexo {anx['gastos']}",
                   title=f"ANEXO {anx['gastos']} — INFORMACIÓN REQUERIDA POR EL ART. 64 INC. b) LEY 19.550",
                   cols=["Costo de servicios", "Gastos de administración", "Gastos de comercialización",
-                        "Total"], rows=rows, land=True))
+                        "Total actual"] + (["Total anterior"] if comp else []), rows=rows, land=True))
 
     notas = armar_notas(a, X, comp_rubros, nota_n)
     return S, notas, anx, nota_n
