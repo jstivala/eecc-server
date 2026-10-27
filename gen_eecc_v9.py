@@ -528,12 +528,20 @@ def calcular(a, cuentas, prior):
     for k in ("costo", "gcom", "gadm", "og", "ig"):
         P[k] = abs(P[k])
 
+    # ── ¿El sistema ya registró el ajuste por inflación? (cuenta RECPAM con saldo, p. ej. asiento de Xubio) ──
+    # En ese caso se respetan los saldos del sumas y saldos (PN y bienes de uso ya reexpresados) y no se proponen
+    # asientos de reexpresión; los papeles de trabajo quedan como control.
+    recpam_ss = round(sum(s for n, s, k in clas if k == "rfyt" and re.search(r"recpam", nkey(n))), 2)
+    axi_sistema = abs(recpam_ss) > 1
+
     # ── Bienes de uso ──
-    bu_ss = {}
+    bu_ss, bu_orig, bu_acum = {}, {}, {}
     for n, s, k in clas:
         if k == "bu":
             bu_ss.setdefault(tipo_bu(n), 0.0)
             bu_ss[tipo_bu(n)] += s
+            dst = bu_acum if re.search(r"amort|depreciacion", nkey(n)) else bu_orig
+            dst[tipo_bu(n)] = dst.get(tipo_bu(n), 0.0) + s
     anexo_p = prior.anexo_bu if tiene_prior else {}
     if tiene_prior and P["bu"] and not anexo_p:
         warn.append("No pude leer el Anexo I del EECC anterior: se tomó el neto anterior como valor de origen "
@@ -561,6 +569,11 @@ def calcular(a, cuentas, prior):
             warn.append(f"Bienes de uso '{tipo}': el saldo bajó respecto del ejercicio anterior; "
                         "se expuso como baja. Verificar.")
         o_cie = o_ini + altas_h - bajas_h
+        if axi_sistema:
+            # valores de origen y amortización acumulada tal como están en el sistema (ya reexpresados)
+            o_cie = round(bu_orig.get(tipo, 0.0), 2)
+            altas_h, bajas_h = max(o_cie - o_ini, 0.0), max(o_ini - o_cie, 0.0)
+            a_ini = round(-bu_acum.get(tipo, 0.0), 2)
         amort = round(min(o_cie * tasa / 100, max(o_cie - a_ini, 0)), 2) if not amort_booked else 0.0
         bu_rows.append(dict(tipo=tipo, o_ini=o_ini, altas=altas_h, bajas=bajas_h, o_cie=o_cie,
                             a_ini=a_ini, tasa=tasa, amort=amort, a_cie=a_ini + amort,
@@ -570,6 +583,8 @@ def calcular(a, cuentas, prior):
         tot_o = sum(r["o_cie"] for r in bu_rows) or 1
         for r in bu_rows:
             r["amort"] = round(amort_booked * r["o_cie"] / tot_o, 2)
+            if axi_sistema:      # la acumulada del sistema ya incluye la amortización registrada
+                r["a_ini"] = round(r["a_ini"] - r["amort"], 2)
             r["a_cie"] = r["a_ini"] + r["amort"]
             r["neto"] = r["o_cie"] - r["a_cie"]
     amort_ej = sum(r["amort"] for r in bu_rows)
@@ -600,19 +615,24 @@ def calcular(a, cuentas, prior):
     pn_ss = cap_ss + aj_p + apirr_p + res_p + rna_p
     ss_pn = dict(cap=cap_ss, aj=aj_p, apirr=apirr_p, resleg=res_p, rna=rna_p)
     aportes_nom = 0.0
-    # RECPAM ya registrado en el sistema (p. ej. asiento de ajuste por inflación de Xubio): el generador recalcula
-    # el RFyT por diferencia, así que se descuenta del ajuste de capital lo que ese asiento ya llevó al PN.
-    recpam_ss = sum(s for n, s, k in clas if k == "rfyt" and re.search(r"recpam", nkey(n)))
     aj_base = aj_p
-    if tiene_prior:
+    pn_control = None
+    if tiene_prior and axi_sistema:
+        # PN de inicio = el que dejó el sistema (ya reexpresado); se controla contra el PN anterior × coeficiente
+        pn_prior = prior.g("pn")
+        pn_control = round(pn_prior * COF, 2)
+        aj_base = aj_p - (pn_ss - pn_prior)
+        I = dict(cap=cap_ss, aj=aj_p, apirr=apirr_p, resleg=res_p, rna=rna_p)
+        pn_base = dict(cap=cap_ss, aj=aj_base, apirr=apirr_p, resleg=res_p,
+                       rna=pn_prior - (cap_ss + aj_base + apirr_p + res_p))
+        warn.append(f"El sistema ya tiene registrado el ajuste por inflación (RECPAM {fmt_ar(recpam_ss)}): se "
+                    "respetaron sus saldos y no se proponen asientos de reexpresión.")
+        if abs(pn_ss - pn_control) > max(1.0, abs(pn_control) * 0.005):
+            warn.append(f"El PN de inicio reexpresado por el sistema ({fmt_ar(pn_ss)}) difiere del PN anterior × "
+                        f"coeficiente de Notion ({fmt_ar(pn_control)}). Revisar el coeficiente usado en Xubio.")
+    elif tiene_prior:
         pn_prior = prior.g("pn")
         dif = pn_ss - pn_prior
-        if dif > 1 and recpam_ss > 1 and abs(dif - recpam_ss) <= max(1.0, dif * 0.01):
-            aj_base = aj_p - dif
-            dif = 0.0
-            warn.append("El sumas y saldos ya tiene registrado el ajuste por inflación del ejercicio (RECPAM contra "
-                        "Ajuste de capital). Se recalculó igual con el coeficiente de Notion; el asiento de "
-                        "reexpresión solo lleva la diferencia.")
         if abs(dif) > max(1.0, abs(pn_prior) * 0.001):
             if dif > 0 and abs(cap_ss - cap) < 1:
                 aportes_nom = dif
@@ -622,8 +642,8 @@ def calcular(a, cuentas, prior):
                 warn.append(f"El PN del sumas y saldos ({fmt_ar(pn_ss)}) no coincide con el PN del EECC "
                             f"anterior ({fmt_ar(pn_prior)}). Diferencia {fmt_ar(dif)}.")
         # inicio = PN anterior (sin los aportes nuevos)
-        base_cap, base_aj, base_apirr, base_res = cap, aj_base, apirr_p, res_p
-        base_rna = pn_prior - (cap + aj_base + apirr_p + res_p) if aportes_nom == 0 else rna_p
+        base_cap, base_aj, base_apirr, base_res = cap, aj_p, apirr_p, res_p
+        base_rna = pn_prior - (cap + aj_p + apirr_p + res_p) if aportes_nom == 0 else rna_p
         I = dict(cap=cap, aj=round((base_cap + base_aj) * COF - base_cap, 2), apirr=rx(base_apirr),
                  resleg=rx(base_res), rna=rx(base_rna))
         pn_base = dict(cap=base_cap, aj=base_aj, apirr=base_apirr, resleg=base_res, rna=base_rna)
@@ -635,7 +655,9 @@ def calcular(a, cuentas, prior):
     I["pn"] = I["aportes"] + I["resleg"] + I["rna"]
     # Primer ejercicio: el capital se suscribe en la constitución (inicio del ejercicio) y se reexpresa con el
     # coeficiente del ejercicio; el ajuste va a «Ajuste de capital».
-    aportes_aj = round(aportes_nom * (COF - 1), 2) if not tiene_prior else 0.0
+    aportes_aj = 0.0
+    if not tiene_prior:
+        aportes_aj = round(aj_p, 2) if axi_sistema else round(aportes_nom * (COF - 1), 2)
     aportes_h = round(aportes_nom + aportes_aj, 2)
     integ_pend = sum(s for n, s, k in clas if k == "oc" and re.search(r"integra|suscripcion pendiente", nkey(n)))
 
@@ -722,6 +744,7 @@ def calcular(a, cuentas, prior):
         warn.append(f"El patrimonio neto al cierre es negativo ({fmt_ar(C['pn'])}).")
 
     return dict(cuentas=clas, C=C, A=A, I=I, R=R, E=E, AE=AE, bu=bu_rows, amort_ej=amort_ej, pn_base=pn_base, ss_pn=ss_pn, amort_booked=amort_booked,
+                axi_sistema=axi_sistema, recpam_ss=recpam_ss, pn_control=pn_control,
                 aportes=aportes_h, aportes_nom=round(aportes_nom, 2), aportes_aj=aportes_aj, integ_pend=integ_pend,
                 inicio=inicio, cierre=cierre, cierre_ant=cierre_ant,
                 tiene_prior=tiene_prior, moneda_ext=moneda_ext, warn=warn, cof=COF,
@@ -1316,6 +1339,17 @@ def escribir_papeles(wb, a, X):
     r += 1
     ws.cell(r, 1, "Método: simplificaciones para entidades pequeñas (RT 54); resultados del ejercicio en moneda "
                   "nominal y RECPAM determinado por diferencia.").font = Font(italic=True, size=9)
+    if X.get("axi_sistema"):
+        r += 1
+        ws.cell(r, 1, f"El sistema ya tiene registrado el ajuste por inflación (RECPAM {fmt_ar(X['recpam_ss'])}): los "
+                      "estados respetan esos saldos y no se proponen asientos de reexpresión. Este papel queda "
+                      "como control del cálculo con el coeficiente.").font = Font(italic=True, size=9, color="9C5700")
+        if X.get("pn_control") is not None:
+            r += 1
+            ws.cell(r, 1, "PN de inicio: registrado en el sistema vs. PN anterior × coeficiente")
+            num(ws, r, 2, X["I"]["pn"])
+            num(ws, r, 3, X["pn_control"])
+            num(ws, r, 4, X["I"]["pn"] - X["pn_control"], bold=True)
 
     # 2. PN de inicio
     r += 2
@@ -1928,7 +1962,7 @@ def armar_asientos(a, X):
     asiento("Reclasificación del resultado del ejercicio anterior a Resultados no asignados", movs)
 
     # 2. Reexpresión del PN de inicio
-    if X["tiene_prior"]:
+    if X["tiene_prior"] and not X["axi_sistema"]:
         I, sp = X["I"], X["ss_pn"]
         aj_c, aj_n = cta([r"ajuste (de|del) capital"], "Ajuste de capital")
         movs = [(aj_c, -(I["aj"] - sp["aj"]), aj_n)]
@@ -1941,7 +1975,7 @@ def armar_asientos(a, X):
         movs.append((rna_c, -(I["rna"] - sp["rna"]), rna_n))
         movs.append((recpam, -sum(m[1] for m in movs), recpam_n))
         asiento(f"Reexpresión del patrimonio neto al inicio (coeficiente {X['cof']:.5f}".replace(".", ",") + ")", movs)
-    elif X.get("aportes_aj"):
+    elif not X["tiene_prior"] and X.get("aportes_aj") and not X["axi_sistema"]:
         aj_c, aj_n = cta([r"ajuste (de|del) capital"], "Ajuste de Capital")
         falta = round(X["aportes_aj"] - X["ss_pn"]["aj"], 2)     # lo que el sistema todavía no registró
         asiento(f"Reexpresión del capital suscripto en el ejercicio (coeficiente {X['cof']:.5f}".replace(".", ",") + ")",
