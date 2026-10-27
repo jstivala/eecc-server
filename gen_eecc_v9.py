@@ -248,25 +248,40 @@ def leer_ss(path):
     wb = openpyxl.load_workbook(path, data_only=True)
     ws = wb.active
     rows = [list(r) for r in ws.iter_rows(values_only=True)]
+    # si la hoja activa está vacía, usar la primera hoja con datos
+    if not any(any(c is not None for c in r) for r in rows):
+        for w in wb.worksheets:
+            rr = [list(r) for r in w.iter_rows(values_only=True)]
+            if any(any(c is not None for c in r) for r in rr):
+                rows = rr
+                break
 
     hdr_i, c_cta, c_sal, c_debe, c_haber = None, None, None, None, None
-    for i, r in enumerate(rows[:15]):
+    hdr_txt = ""
+    for i, r in enumerate(rows[:30]):
         labels = [nkey(c) if isinstance(c, str) else "" for c in r]
-        if any(l == "cuenta" or l.startswith("cuenta") or l == "descripcion" for l in labels):
+        if any(l.startswith("cuenta") or l in ("descripcion", "nombre", "denominacion", "nombre de la cuenta")
+               for l in labels):
             hdr_i = i
+            hdr_txt = " | ".join(str(c) for c in r if c is not None)
+            sal_hist, sal_any = None, None
             for j, l in enumerate(labels):
-                if c_cta is None and (l.startswith("cuenta") or l == "descripcion"):
+                if c_cta is None and (l.startswith("cuenta") or l in ("descripcion", "nombre", "denominacion",
+                                                                       "nombre de la cuenta")):
                     c_cta = j
-                # saldo histórico: se ignoran "Saldo Anterior" y las columnas ajustadas por inflación de Xubio
-                if "saldo" in l and "anterior" not in l and "ajustad" not in l:
-                    c_sal = j
-                if l == "debe" or l.startswith("debe"):
+                if "saldo" in l and "anterior" not in l:
+                    sal_any = j
+                    # saldo histórico: se ignoran las columnas ajustadas por inflación de Xubio
+                    if "ajustad" not in l:
+                        sal_hist = j
+                if (l.startswith("debe") or l.startswith("debito")) and "ajustad" not in l:
                     c_debe = j
-                if l == "haber" or l.startswith("haber"):
+                if (l.startswith("haber") or l.startswith("credito")) and "ajustad" not in l:
                     c_haber = j
+            c_sal = sal_hist if sal_hist is not None else sal_any
             break
     if hdr_i is None:
-        # sin encabezado: primera columna de texto + primera numérica
+        # sin encabezado: primera columna de texto + última numérica
         hdr_i = -1
         for r in rows:
             txt = [j for j, c in enumerate(r) if isinstance(c, str) and c.strip()]
@@ -275,7 +290,10 @@ def leer_ss(path):
                 c_cta, c_sal = txt[0], num[-1]
                 break
     if c_cta is None or (c_sal is None and (c_debe is None or c_haber is None)):
-        raise EECCError("No pude identificar las columnas Cuenta / Saldo en el sumas y saldos.")
+        raise EECCError("No pude identificar las columnas Cuenta / Saldo en el sumas y saldos. "
+                        + (f"Encabezado encontrado: {hdr_txt}" if hdr_txt else
+                           "No encontré una fila de encabezado con la palabra «Cuenta».")
+                        + " El archivo tiene que tener una columna «Cuenta» y una «Saldo» (o Debe/Haber).")
 
     cuentas = []
     for r in rows[hdr_i + 1:]:
@@ -291,7 +309,9 @@ def leer_ss(path):
         else:
             d = r[c_debe] or 0
             h = r[c_haber] or 0
-            v = (d if isinstance(d, (int, float)) else 0) - (h if isinstance(h, (int, float)) else 0)
+            d = d if isinstance(d, (int, float)) else 0
+            h = h if isinstance(h, (int, float)) else 0
+            v = d + h if h < 0 else d - h      # Xubio exporta los créditos con signo negativo
         if isinstance(v, str):
             v = parse_num(v)
         if v is None:
