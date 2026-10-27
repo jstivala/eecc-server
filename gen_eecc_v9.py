@@ -257,6 +257,7 @@ def leer_ss(path):
                 break
 
     hdr_i, c_cta, c_sal, c_debe, c_haber = None, None, None, None, None
+    c_hist, solo_ajustado = None, False
     hdr_txt = ""
     for i, r in enumerate(rows[:30]):
         labels = [nkey(c) if isinstance(c, str) else "" for c in r]
@@ -264,21 +265,25 @@ def leer_ss(path):
                for l in labels):
             hdr_i = i
             hdr_txt = " | ".join(str(c) for c in r if c is not None)
-            sal_hist, sal_any = None, None
+            sal_hist, sal_any, sal_adj = None, None, None
             for j, l in enumerate(labels):
                 if c_cta is None and (l.startswith("cuenta") or l in ("descripcion", "nombre", "denominacion",
                                                                        "nombre de la cuenta")):
                     c_cta = j
                 if "saldo" in l and "anterior" not in l:
                     sal_any = j
-                    # saldo histórico: se ignoran las columnas ajustadas por inflación de Xubio
-                    if "ajustad" not in l:
-                        sal_hist = j
+                    if "ajustad" in l:
+                        sal_adj = j          # saldo ajustado por inflación (Xubio)
+                    else:
+                        sal_hist = j         # saldo histórico (de libros)
                 if (l.startswith("debe") or l.startswith("debito")) and "ajustad" not in l:
                     c_debe = j
                 if (l.startswith("haber") or l.startswith("credito")) and "ajustad" not in l:
                     c_haber = j
-            c_sal = sal_hist if sal_hist is not None else sal_any
+            # los estados se arman con el saldo ajustado si está; el histórico se usa para Ganancias y asientos
+            c_sal = sal_adj if sal_adj is not None else (sal_hist if sal_hist is not None else sal_any)
+            c_hist = sal_hist if (sal_adj is not None and sal_hist is not None) else None
+            solo_ajustado = sal_adj is not None and sal_hist is None
             break
     if hdr_i is None:
         # sin encabezado: primera columna de texto + última numérica
@@ -295,7 +300,7 @@ def leer_ss(path):
                            "No encontré una fila de encabezado con la palabra «Cuenta».")
                         + " El archivo tiene que tener una columna «Cuenta» y una «Saldo» (o Debe/Haber).")
 
-    cuentas = []
+    cuentas, hist = [], []
     for r in rows[hdr_i + 1:]:
         if c_cta >= len(r):
             continue
@@ -317,13 +322,20 @@ def leer_ss(path):
         if v is None:
             v = 0.0
         cuentas.append((nom.strip(), float(v)))
+        if c_hist is not None:
+            vh = r[c_hist] if c_hist < len(r) else None
+            vh = parse_num(vh) if isinstance(vh, str) else vh
+            hist.append((nom.strip(), float(vh or 0.0)))
 
     total = sum(v for _, v in cuentas)
     if abs(total) > 1.0:
         raise EECCError(
             f"El sumas y saldos no cuadra: saldos deudores menos acreedores = {fmt_ar(total)}. "
             "Revisar la exportación del sistema.")
-    return cuentas
+    if hist and abs(sum(v for _, v in hist)) > 1.0:
+        hist = []
+    return cuentas, dict(hist=hist or None, ajustado=(c_hist is not None) or solo_ajustado,
+                         solo_ajustado=solo_ajustado)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -552,7 +564,7 @@ def calcular(a, cuentas, prior):
     # En ese caso se respetan los saldos del sumas y saldos (PN y bienes de uso ya reexpresados) y no se proponen
     # asientos de reexpresión; los papeles de trabajo quedan como control.
     recpam_ss = round(sum(s for n, s, k in clas if k == "rfyt" and re.search(r"recpam", nkey(n))), 2)
-    axi_sistema = abs(recpam_ss) > 1
+    axi_sistema = abs(recpam_ss) > 1 or bool(getattr(a, "ss_ajustado", False))
 
     # ── Bienes de uso ──
     bu_ss, bu_orig, bu_acum = {}, {}, {}
@@ -1746,8 +1758,24 @@ def liquidar_ganancias(a, X0):
         return None
 
     # 1. Resultado contable nominal (sin RECPAM): el SS viene en valores históricos
-    rfyt_nom = -sum(s for n, s, k in cuentas if k == "rfyt" and not re.search(r"recpam|ajuste por inflacion", nkey(n)))
-    res_nom = round(R["ventas"] - R["costo"] - R["gcom"] - R["gadm"] + R["oi"] + rfyt_nom, 2)
+    hist = X0.get("hist")
+    if hist:
+        # resultado de libros (valores históricos, antes del ajuste por inflación de Xubio)
+        res_keys = ("ventas", "costo", "gcom", "gadm", "amort", "oi", "rfyt")
+        rfyt_nom = -sum(v for n, v in hist if clasificar(n) == "rfyt" and
+                        not re.search(r"recpam|ajuste por inflacion", nkey(n)))
+        res_nom = -sum(v for n, v in hist if clasificar(n) in res_keys and
+                       not re.search(r"recpam|ajuste por inflacion", nkey(n)))
+        if not X0["amort_booked"]:
+            res_nom -= X0["amort_ej"]
+        res_nom = round(res_nom, 2)
+    else:
+        rfyt_nom = -sum(s for n, s, k in cuentas if k == "rfyt" and not re.search(r"recpam|ajuste por inflacion", nkey(n)))
+        res_nom = round(R["ventas"] - R["costo"] - R["gcom"] - R["gadm"] + R["oi"] + rfyt_nom, 2)
+        if getattr(a, "ss_solo_ajustado", False):
+            G["warn"].append("El sumas y saldos solo trae el saldo ajustado por inflación: la base de Ganancias se "
+                             "calculó con resultados ajustados. Exportá también la columna «Saldo Final» (histórica) "
+                             "para que parta de los valores de libros.")
     noded = [(n, s) for n, s, k in cuentas if k in ("gadm", "gcom", "oi") and s > 0 and
              re.search(r"multa|punitorio|recargo|donacion", nkey(n))]
     noded_tot = round(sum(s for _, s in noded), 2)
@@ -1947,8 +1975,9 @@ def armar_asientos(a, X):
     nombres = {nkey(n): n for n, _, _ in cuentas}
     # saldo inicial = sumas y saldos tal como vino del sistema (sin la provisión de ganancias)
     ss = X.get("cuentas_ss") or [(n, s) for n, s, _ in cuentas]
+    libros = X.get("hist")                          # saldos históricos (de libros), si el SS los trae
     en_ss = {n for n, _ in ss}
-    saldo = {n: s for n, s in ss}                   # saldo deudor positivo
+    saldo = {n: s for n, s in (libros or ss)}       # saldo deudor positivo
 
     def cta(preferidas, nueva):
         for p in preferidas:
@@ -1973,6 +2002,13 @@ def armar_asientos(a, X):
 
     recpam, recpam_n = cta([r"^recpam$", r"recpam"], "RECPAM")
     rna_c, rna_n = cta([r"resultados? no asignados?", r"^rna$"], "Resultados no asignados")
+
+    # 0. Ajuste por inflación calculado por Xubio (diferencia entre saldo ajustado y saldo de libros)
+    if libros:
+        adj = {n: s for n, s in ss}
+        movs = [(n, round(adj.get(n, 0.0) - saldo.get(n, 0.0), 2), False) for n in adj]
+        asiento("Ajuste por inflación según Xubio (saldo ajustado − saldo histórico). No importar si ya está "
+                "registrado en el sistema", movs)
 
     # 1. Reclasificación del resultado del ejercicio anterior a Resultados no asignados
     movs = []
@@ -2426,7 +2462,9 @@ def main(argv=None):
             raise EECCError("El coeficiente de reexpresión tiene que ser mayor a cero.")
         if a.nro_ejercicio > 1 and not a.eecc_anterior:
             raise EECCError("Falta el EECC del ejercicio anterior (PDF) para los comparativos.")
-        cuentas = leer_ss(a.ss_actual)
+        cuentas, ss_info = leer_ss(a.ss_actual)
+        a.ss_ajustado = bool(ss_info["ajustado"])
+        a.ss_solo_ajustado = bool(ss_info["solo_ajustado"])
         prior = Prior(a.eecc_anterior if a.nro_ejercicio > 1 else None)
         if a.nro_ejercicio > 1 and not prior.text.strip():
             raise EECCError("No pude leer el texto del EECC anterior (¿PDF escaneado?).")
@@ -2435,11 +2473,17 @@ def main(argv=None):
                             "del ejercicio anterior de esta sociedad.")
         cuit_pdf = re.sub(r"\D", "", prior.text[:4000])
         X = calcular(a, cuentas, prior)
+        X["hist"] = ss_info["hist"]
         G = liquidar_ganancias(a, X)
         if G["aplica"] and G["movs"]:
             X = calcular(a, aplicar_movs(cuentas, G["movs"]), prior)
         X["ganancias"] = G
         X["cuentas_ss"] = cuentas
+        X["hist"] = ss_info["hist"]
+        if a.ss_solo_ajustado:
+            X["warn"].append("El sumas y saldos solo trae el saldo ajustado por inflación: los asientos parten de "
+                             "esos saldos (como si el ajuste ya estuviera registrado en Xubio). Para que partan de los "
+                             "saldos de libros, exportá también la columna «Saldo Final».")
         X["warn"] += G["warn"]
         S, notas, anx, nota_n = armar(a, X)
         escribir_xlsx(a.output, a, X, S, notas)
