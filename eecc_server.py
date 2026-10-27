@@ -55,6 +55,8 @@ async def generar(
     representante: str   = Form(default=""),
     cargo:         str   = Form(default=""),
     tipo_societario: str = Form(default=""),
+    mipyme:        str   = Form(default=""),   # "Sí" / "No" (vacío = se asume MiPyME, con advertencia)
+    quebrantos:    str   = Form(default=""),   # quebrantos impositivos de ejercicios anteriores
 ):
     tmp = tempfile.mkdtemp(prefix="eecc_")
     try:
@@ -77,8 +79,15 @@ async def generar(
             "--representante", representante,
             "--cargo",         cargo,
             "--tipo-societario", tipo_societario,
+            "--mipyme",        mipyme,
             "--output",        out_path,
         ]
+        try:
+            q = float(str(quebrantos).replace(".", "").replace(",", ".")) if str(quebrantos).strip() else 0.0
+        except ValueError:
+            q = 0.0
+        if q:
+            cmd += ["--quebrantos", str(q)]
 
         if eecc_url and eecc_url.strip():
             prev_path = os.path.join(tmp, "eecc_anterior.pdf")
@@ -138,12 +147,16 @@ async def generar(
             pdfs_to_merge.append(informe_pdf)
         _merge_pdfs(pdfs_to_merge, merged_pdf)
 
-        # 4. ZIP con xlsx + pdf
+        # 4. ZIP con: PDF del balance + XLSX con estados y papeles de trabajo + XLSX de asientos para Xubio
+        xubio_path = meta.get("xubio") or out_path[:-5] + "_xubio.xlsx"
+        xubio_name = f"Asientos_Xubio_{cuit_slug}_{year}.xlsx"
         zip_path = os.path.join(tmp, "eecc.zip")
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.write(out_path, xlsx_name)
             if os.path.exists(merged_pdf):
                 zf.write(merged_pdf, pdf_name)
+            if os.path.exists(xubio_path):
+                zf.write(xubio_path, xubio_name)
 
         final_zip = Path(tempfile.gettempdir()) / f"eecc_{os.path.basename(tmp)}.zip"
         shutil.copy(zip_path, final_zip)
