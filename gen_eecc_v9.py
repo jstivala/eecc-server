@@ -257,7 +257,8 @@ def leer_ss(path):
             for j, l in enumerate(labels):
                 if c_cta is None and (l.startswith("cuenta") or l == "descripcion"):
                     c_cta = j
-                if "saldo" in l:
+                # saldo histórico: se ignoran "Saldo Anterior" y las columnas ajustadas por inflación de Xubio
+                if "saldo" in l and "anterior" not in l and "ajustad" not in l:
                     c_sal = j
                 if l == "debe" or l.startswith("debe"):
                     c_debe = j
@@ -599,9 +600,19 @@ def calcular(a, cuentas, prior):
     pn_ss = cap_ss + aj_p + apirr_p + res_p + rna_p
     ss_pn = dict(cap=cap_ss, aj=aj_p, apirr=apirr_p, resleg=res_p, rna=rna_p)
     aportes_nom = 0.0
+    # RECPAM ya registrado en el sistema (p. ej. asiento de ajuste por inflación de Xubio): el generador recalcula
+    # el RFyT por diferencia, así que se descuenta del ajuste de capital lo que ese asiento ya llevó al PN.
+    recpam_ss = sum(s for n, s, k in clas if k == "rfyt" and re.search(r"recpam", nkey(n)))
+    aj_base = aj_p
     if tiene_prior:
         pn_prior = prior.g("pn")
         dif = pn_ss - pn_prior
+        if dif > 1 and recpam_ss > 1 and abs(dif - recpam_ss) <= max(1.0, dif * 0.01):
+            aj_base = aj_p - dif
+            dif = 0.0
+            warn.append("El sumas y saldos ya tiene registrado el ajuste por inflación del ejercicio (RECPAM contra "
+                        "Ajuste de capital). Se recalculó igual con el coeficiente de Notion; el asiento de "
+                        "reexpresión solo lleva la diferencia.")
         if abs(dif) > max(1.0, abs(pn_prior) * 0.001):
             if dif > 0 and abs(cap_ss - cap) < 1:
                 aportes_nom = dif
@@ -611,14 +622,14 @@ def calcular(a, cuentas, prior):
                 warn.append(f"El PN del sumas y saldos ({fmt_ar(pn_ss)}) no coincide con el PN del EECC "
                             f"anterior ({fmt_ar(pn_prior)}). Diferencia {fmt_ar(dif)}.")
         # inicio = PN anterior (sin los aportes nuevos)
-        base_cap, base_aj, base_apirr, base_res = cap, aj_p, apirr_p, res_p
-        base_rna = pn_prior - (cap + aj_p + apirr_p + res_p) if aportes_nom == 0 else rna_p
+        base_cap, base_aj, base_apirr, base_res = cap, aj_base, apirr_p, res_p
+        base_rna = pn_prior - (cap + aj_base + apirr_p + res_p) if aportes_nom == 0 else rna_p
         I = dict(cap=cap, aj=round((base_cap + base_aj) * COF - base_cap, 2), apirr=rx(base_apirr),
                  resleg=rx(base_res), rna=rx(base_rna))
         pn_base = dict(cap=base_cap, aj=base_aj, apirr=base_apirr, resleg=base_res, rna=base_rna)
     else:
         pn_base = dict(cap=0.0, aj=0.0, apirr=0.0, resleg=0.0, rna=0.0)
-        aportes_nom = pn_ss
+        aportes_nom = pn_ss - aj_p      # si el sistema ya registró ajuste de capital, se recalcula sobre el nominal
         I = dict(cap=0.0, aj=0.0, apirr=0.0, resleg=0.0, rna=0.0)
     I["aportes"] = I["cap"] + I["aj"] + I["apirr"]
     I["pn"] = I["aportes"] + I["resleg"] + I["rna"]
@@ -1716,9 +1727,6 @@ def liquidar_ganancias(a, X0):
     P = round(sum(s for _, s in pc), 2)
     mipyme = (a.mipyme or "").strip().lower()
     if mipyme in ("", "si", "sí", "s", "true", "1", "yes"):
-        if not mipyme:
-            G["warn"].append("No se indicó si la sociedad es MiPyME: se tomó como MiPyME (impuesto a los débitos y "
-                             "créditos computable al 100%). Si no lo es, cargar «No» en la columna MiPyME de Notion.")
         es_mipyme = True
         usado = min(P, imp)
         rem = round(P - usado, 2)
@@ -1935,8 +1943,9 @@ def armar_asientos(a, X):
         asiento(f"Reexpresión del patrimonio neto al inicio (coeficiente {X['cof']:.5f}".replace(".", ",") + ")", movs)
     elif X.get("aportes_aj"):
         aj_c, aj_n = cta([r"ajuste (de|del) capital"], "Ajuste de Capital")
+        falta = round(X["aportes_aj"] - X["ss_pn"]["aj"], 2)     # lo que el sistema todavía no registró
         asiento(f"Reexpresión del capital suscripto en el ejercicio (coeficiente {X['cof']:.5f}".replace(".", ",") + ")",
-                [(recpam, X["aportes_aj"], recpam_n), (aj_c, -X["aportes_aj"], aj_n)])
+                [(recpam, falta, recpam_n), (aj_c, -falta, aj_n)])
 
     # 3. Reexpresión de bienes de uso y 4. amortizaciones del ejercicio
     movs3, movs4 = [], []
