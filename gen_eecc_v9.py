@@ -185,13 +185,14 @@ RULES = [
            r"(retencion|retenciones|percepcion|percepciones).*(sufrid|iibb|iva|ganancias)|"
            r"anticipos?|pagos? a cuenta|25\.?413|\b(db|debitos?) y (cr|creditos?)|credito fiscal|"
            r"^socio|gastos pagados por adelantado|creditos? (varios|diversos)|deudores varios|"
-           r"prestamos? a socios|a devengar|depositos? en garantia|reintegros? a cobrar"),
+           r"prestamos? a socios|a devengar|depositos? en garantia|reintegros? a cobrar|"
+           r"integracion (de )?capital|capital (suscripto )?(pendiente|a integrar)|suscripcion pendiente"),
     # Resultados
     ("costo", r"^compras?\b|compra de|^costo|\bcmv\b|mercaderias vendidas"),
     ("ventas", r"^ventas?\b|venta de|ingresos? por|servicios prestados|honorarios (ganados|cobrados|percibidos)|"
                r"^facturacion|ingresos? (operativos|de explotacion)"),
     ("ig", r"impuesto a las ganancias"),
-    ("oi", r"otros ingresos|otros egresos|resultado (por )?venta (de )?bienes de uso|recupero"),
+    ("oi", r"otros ingresos|otros egresos|resultado (por )?venta (de )?bienes de uso|recupero|bonifi"),
     ("gcom", r"iibb|ingresos brutos|publicidad|propaganda|comercializacion|fletes|comisiones|marketing|"
              r"convenio multilateral"),
     ("gadm", r"gasto|sueldo|jornal|cargas sociales|honorario|servicios publicos|alquiler|mantenimiento|"
@@ -621,7 +622,11 @@ def calcular(a, cuentas, prior):
         I = dict(cap=0.0, aj=0.0, apirr=0.0, resleg=0.0, rna=0.0)
     I["aportes"] = I["cap"] + I["aj"] + I["apirr"]
     I["pn"] = I["aportes"] + I["resleg"] + I["rna"]
-    aportes_h = round(aportes_nom, 2)
+    # Primer ejercicio: el capital se suscribe en la constitución (inicio del ejercicio) y se reexpresa con el
+    # coeficiente del ejercicio; el ajuste va a «Ajuste de capital».
+    aportes_aj = round(aportes_nom * (COF - 1), 2) if not tiene_prior else 0.0
+    aportes_h = round(aportes_nom + aportes_aj, 2)
+    integ_pend = sum(s for n, s, k in clas if k == "oc" and re.search(r"integra|suscripcion pendiente", nkey(n)))
 
     # ── Resultados ──
     ventas = suma("ventas", -1)
@@ -682,14 +687,14 @@ def calcular(a, cuentas, prior):
     E["res"] = res
     E["amort"] = amort_ej
     E["cv"] = -d("cv")
-    E["oc"] = -d("oc")
+    E["oc"] = -(d("oc") - (integ_pend if not tiene_prior else 0.0))
     E["bc"] = -d("bc")
     E["deu"] = d("dc") + d("rem") + d("df") + d("od")
     E["op"] = E["res"] + E["amort"] + E["cv"] + E["oc"] + E["bc"] + E["deu"]
     E["bu"] = -(C["bu"] + amort_ej - A.get("bu", 0.0))
     E["invs"] = -d("inv")
     E["inv"] = E["bu"] + E["invs"]
-    E["aportes"] = aportes_h
+    E["aportes"] = aportes_h - (integ_pend if not tiene_prior else 0.0)
     E["prest"] = d("prest")
     E["ds"] = d("ds")
     E["fin"] = E["aportes"] + E["prest"] + E["ds"]
@@ -706,7 +711,8 @@ def calcular(a, cuentas, prior):
         warn.append(f"El patrimonio neto al cierre es negativo ({fmt_ar(C['pn'])}).")
 
     return dict(cuentas=clas, C=C, A=A, I=I, R=R, E=E, AE=AE, bu=bu_rows, amort_ej=amort_ej, pn_base=pn_base, ss_pn=ss_pn, amort_booked=amort_booked,
-                aportes=aportes_h, inicio=inicio, cierre=cierre, cierre_ant=cierre_ant,
+                aportes=aportes_h, aportes_nom=round(aportes_nom, 2), aportes_aj=aportes_aj, integ_pend=integ_pend,
+                inicio=inicio, cierre=cierre, cierre_ant=cierre_ant,
                 tiene_prior=tiene_prior, moneda_ext=moneda_ext, warn=warn, cof=COF,
                 primer_rt54=not (tiene_prior and prior.normas_rt54),
                 actividad=a.actividad or prior.__dict__.get("actividad", ""),
@@ -813,10 +819,10 @@ def armar(a, X):
                  eep("", I["cap"], I["aj"], I["apirr"], I["resleg"], I["rna"], a_ini if comp else None)))
     if X["aportes"] or (comp and a_apo):
         rows.append(("det", "Suscripción de capital / aportes",
-                     eep("", X["aportes"], 0, 0, 0, 0, a_apo if comp else None)))
+                     eep("", X["aportes"] - X["aportes_aj"], X["aportes_aj"], 0, 0, 0, a_apo if comp else None)))
     rows.append(("det", "Ganancia (Pérdida) del ejercicio",
                  eep("", 0, 0, 0, 0, R["res"], A.get("res", 0.0) if comp else None)))
-    fin = eep("", I["cap"] + X["aportes"], I["aj"], I["apirr"], I["resleg"], I["rna"] + R["res"],
+    fin = eep("", I["cap"] + X["aportes"] - X["aportes_aj"], I["aj"] + X["aportes_aj"], I["apirr"], I["resleg"], I["rna"] + R["res"],
               A.get("pn", 0.0) if comp else None)
     rows.append(("grand", "Saldos al cierre del ejercicio", fin))
     S.append(dict(key="EEPN", title="ESTADO DE EVOLUCIÓN DEL PATRIMONIO NETO", cols=cols, rows=rows,
@@ -1205,6 +1211,7 @@ def escribir_xlsx(path, a, X, S, notas):
     ws.sheet_properties.pageSetUpPr.fitToPage = True
 
     escribir_papeles(wb, a, X)
+    escribir_pt_ganancias(wb, a, X)
     escribir_asientos(wb, a, X)
 
     # Control (no va al PDF)
@@ -1615,20 +1622,278 @@ def escribir_papeles(wb, a, X):
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# Liquidación del impuesto a las ganancias (provisión + cómputo Ley 25.413)
+# ════════════════════════════════════════════════════════════════════════════
+# Escala art. 73 LIG (sociedades), por año de inicio del ejercicio: (hasta, fijo, alícuota, excedente de)
+ESCALA_IG = {
+    2024: [(34703523.08, 0.0, 0.25, 0.0), (347035230.79, 8675880.77, 0.30, 34703523.08),
+           (None, 102375393.08, 0.35, 347035230.79)],
+    2025: [(101679575.26, 0.0, 0.25, 0.0), (1016795752.60, 25419893.82, 0.30, 101679575.26),
+           (None, 299954747.02, 0.35, 1016795752.60)],
+}
+EXENTAS_IG = r"asociacion civil|fundacion|mutual|cooperativa"
+# Cuentas del plan estándar de Xubio: aunque no figuren en el sumas y saldos (saldo cero) ya existen en el plan
+PLAN_XUBIO = {nkey(x) for x in [
+    "Caja", "Banco", "Valores a Depositar", "Deudores por Venta", "Otras Retenciones Sufridas",
+    "Percepción de Ganancias Sufrida", "Otras Percepciones Sufridas", "Percepción Ingresos Brutos Sufrida",
+    "Retención Ingresos Brutos Sufrida", "Retención Ganancias Sufrida", "Percepción de IVA Sufrida",
+    "Retención de IVA Sufrida", "IVA Crédito Fiscal", "Proveedores", "Cheques Diferidos", "IVA Débito Fiscal",
+    "Sueldos y Jornales a Pagar", "Cargas Sociales a pagar", "Ajuste de Capital", "Resultado del Ejercicio",
+    "Venta de Servicios", "Venta de Bienes", "Compras", "Compra de Servicios", "Compra de Bienes",
+    "Costo de Mercadería Vendida", "Cargas Sociales", "Sueldos y Jornales", "Resultados por Tenencia", "RECPAM",
+    "Ajuste por Redondeo Decimal", "Diferencia de Cambio", "Cheques Rechazados", "Impuesto a las Ganancias",
+    "Diferencia de Inventario"]}
+
+
+def anio_escala(anio):
+    keys = sorted(ESCALA_IG)
+    return max([k for k in keys if k <= anio], default=keys[0])
+
+
+def impuesto_escala(gni, anio):
+    tabla = ESCALA_IG[anio_escala(anio)]
+    for hasta, fijo, al, exc in tabla:
+        if hasta is None or gni <= hasta:
+            return round(fijo + (gni - exc) * al, 2), al
+    return 0.0, 0.0
+
+
+def liquidar_ganancias(a, X0):
+    """Calcula la provisión de ganancias sobre el resultado del sumas y saldos (antes del cierre).
+    Devuelve dict G con el detalle y G['movs'] = [(cuenta, importe_deudor, es_nueva)] para registrar."""
+    G = dict(aplica=False, motivo="", movs=[], filas=[], warn=[])
+    cuentas = X0["cuentas"]
+    if re.search(EXENTAS_IG, nkey(a.tipo_societario or "")):
+        G["motivo"] = (f"Entidad exenta del impuesto a las ganancias ({a.tipo_societario}). No se calcula provisión.")
+        return G
+    if abs(sum(s for _, s, k in cuentas if k == "ig")) > 0.005:
+        G["motivo"] = "El sumas y saldos ya tiene registrado el impuesto a las ganancias: no se vuelve a provisionar."
+        G["warn"].append(G["motivo"])
+        return G
+    G["aplica"] = True
+    R, cof = X0["R"], X0["cof"]
+    nombres = [n for n, _, _ in cuentas]
+
+    def buscar(pat, rubro=None):
+        for n, s, k in cuentas:
+            if re.search(pat, nkey(n)) and (rubro is None or k == rubro):
+                return n
+        return None
+
+    # 1. Resultado contable nominal (sin RECPAM): el SS viene en valores históricos
+    rfyt_nom = -sum(s for n, s, k in cuentas if k == "rfyt" and not re.search(r"recpam|ajuste por inflacion", nkey(n)))
+    res_nom = round(R["ventas"] - R["costo"] - R["gcom"] - R["gadm"] + R["oi"] + rfyt_nom, 2)
+    noded = [(n, s) for n, s, k in cuentas if k in ("gadm", "gcom", "oi") and s > 0 and
+             re.search(r"multa|punitorio|recargo|donacion", nkey(n))]
+    noded_tot = round(sum(s for _, s in noded), 2)
+
+    # 2. Ajuste por inflación impositivo (arts. 105-108). Se considera que procede (IPC 36 meses > 100%).
+    tp, prior = X0["tiene_prior"], X0["prior"]
+    g = (lambda k: prior.g(k) or 0.0) if tp else (lambda k: 0.0)
+    act = g("caja") + g("inv") + g("cv") + g("oc") + g("bc")
+    pas = g("dc") + g("prest") + g("rem") + g("df") + g("ds") + g("od")
+    aj_est = round(-(act - pas) * (cof - 1), 2)
+    if tp:
+        aportes_int, coef_ap = X0["aportes_nom"], cof ** 0.5       # aportes del ejercicio: mitad de año
+    else:
+        aportes_int, coef_ap = X0["aportes_nom"] - X0["integ_pend"], cof   # constitución al inicio
+    aj_din = round(-aportes_int * (coef_ap - 1), 2)
+    aj_imp = round((aj_est + aj_din) * (1 if a.axi_impositivo else 0), 2)
+    quebr = round(a.quebrantos or 0.0, 2)
+    gni = round(res_nom + noded_tot + aj_imp - quebr, 2)
+
+    # 3. Impuesto determinado
+    anio = X0["inicio"].year
+    if anio not in ESCALA_IG:
+        G["warn"].append(f"No tengo cargada la escala del art. 73 para ejercicios iniciados en {anio}: "
+                         f"se usó la de {anio_escala(anio)}. "
+                         "Verificar en el PT Ganancias.")
+    imp, alic = impuesto_escala(gni, anio) if gni > 0 else (0.0, 0.25)
+
+    # 4. Impuesto sobre débitos y créditos (Ley 25.413)
+    pc = [(n, s) for n, s, k in cuentas if k == "oc" and s > 0.005 and
+          re.search(r"25\.?4(13|03)|\b(db|debitos?) y (cr|creditos?)|impuesto.*debitos", nkey(n))]
+    P = round(sum(s for _, s in pc), 2)
+    mipyme = (a.mipyme or "").strip().lower()
+    if mipyme in ("", "si", "sí", "s", "true", "1", "yes"):
+        if not mipyme:
+            G["warn"].append("No se indicó si la sociedad es MiPyME: se tomó como MiPyME (impuesto a los débitos y "
+                             "créditos computable al 100%). Si no lo es, cargar «No» en la columna MiPyME de Notion.")
+        es_mipyme = True
+        usado = min(P, imp)
+        rem = round(P - usado, 2)
+        tras = round(rem * 0.33, 2)
+        gasto = round(rem - tras, 2)
+    else:
+        es_mipyme = False
+        comp = round(P * 0.33, 2)
+        usado = min(comp, imp)
+        tras = round(comp - usado, 2)
+        gasto = round(P - comp, 2)
+    usado = round(usado, 2)
+
+    # 5. Retenciones / percepciones / anticipos de ganancias
+    rets = [(n, s) for n, s, k in cuentas if k == "oc" and s > 0.005 and
+            re.search(r"(retencion|percepcion|anticipo)e?s?.*ganancia", nkey(n)) and not re.search(r"efectuad", nkey(n))]
+    R_tot = round(sum(s for _, s in rets), 2)
+    aplic = round(min(R_tot, max(imp - usado, 0.0)), 2)
+    libre = round(R_tot - aplic, 2)
+    a_pagar = round(imp - usado - aplic, 2)
+    anticipos_base = round(max(imp - usado - aplic, 0.0), 2)
+
+    # 6. Movimientos (asiento de provisión)
+    ig_c = buscar(r"^impuesto a las ganancias$", "ig") or "Impuesto a las Ganancias"
+    gb = buscar(r"gastos? bancari", "gadm") or buscar(r"gastos? bancari")
+    gasto_c, gasto_n = (gb, False) if gb else ("Gastos bancarios", True)
+    movs = [(ig_c, imp, ig_c not in nombres and nkey(ig_c) not in PLAN_XUBIO), (gasto_c, gasto, gasto_n)]
+    rest = round(usado + gasto, 2)
+    for n, s in pc:
+        t = round(min(s, rest), 2)
+        movs.append((n, -t, False))
+        rest = round(rest - t, 2)
+    if rets:
+        for n, s in rets:
+            movs.append((n, -s, False))
+        if libre > 0.005:
+            ld = buscar(r"libre disponibilidad.*ganancia|ganancia.*libre disponibilidad")
+            movs.append((ld or "Saldo de libre disponibilidad Ganancias", libre, ld is None))
+    if a_pagar > 0.005:
+        ap = buscar(r"ganancias a pagar|provision.*ganancias", "df")
+        movs.append((ap or "Impuesto a las ganancias a pagar", -a_pagar, ap is None))
+    G["movs"] = [(c, round(v, 2), nv) for c, v, nv in movs if abs(v) > 0.005]
+    G.update(res_nom=res_nom, rfyt_nom=rfyt_nom, noded=noded, noded_tot=noded_tot, aj_est=aj_est, aj_din=aj_din,
+             aportes_int=aportes_int, coef_ap=coef_ap, aj_imp=aj_imp, quebr=quebr, gni=gni, anio=anio, alic=alic,
+             imp=imp, P=P, pc=pc, es_mipyme=es_mipyme, usado=usado, rem=round(P - usado, 2) if es_mipyme else 0.0,
+             tras=tras, gasto=gasto, rets=rets, R_tot=R_tot, aplic=aplic, libre=libre, a_pagar=a_pagar,
+             anticipos_base=anticipos_base, act=act, pas=pas, cof=cof)
+    return G
+
+
+def aplicar_movs(cuentas, movs):
+    """Suma movimientos al sumas y saldos (por nombre de cuenta); agrega las cuentas nuevas al final."""
+    out = [[n, s] for n, s in cuentas]
+    idx = {n: i for i, (n, _) in enumerate(out)}
+    for c, v, _ in movs:
+        if c in idx:
+            out[idx[c]][1] = round(out[idx[c]][1] + v, 2)
+        else:
+            idx[c] = len(out)
+            out.append([c, round(v, 2)])
+    return [(n, s) for n, s in out]
+
+
+def escribir_pt_ganancias(wb, a, X):
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    NF = '#,##0.00;(#,##0.00);"-"'
+    B = Font(bold=True)
+    INP = PatternFill("solid", fgColor="FFF2CC")
+    T = PatternFill("solid", fgColor="D9E1F2")
+    thin = Border(top=Side(style="thin", color="999999"))
+    G = X.get("ganancias") or {}
+    ws = wb.create_sheet("PT Ganancias")
+    for col, w in zip("ABC", [70, 20, 60]):
+        ws.column_dimensions[col].width = w
+    ws.cell(1, 1, a.empresa).font = Font(bold=True, size=12)
+    ws.cell(2, 1, "PAPEL DE TRABAJO — IMPUESTO A LAS GANANCIAS Y CÓMPUTO LEY 25.413").font = Font(bold=True, size=11)
+    ws.cell(3, 1, f"CUIT {fmt_cuit(a.cuit)} — Ejercicio N° {a.nro_ejercicio} del {X['inicio'].strftime('%d/%m/%Y')} "
+                  f"al {X['cierre'].strftime('%d/%m/%Y')}").font = Font(italic=True, size=9)
+    if not G.get("aplica"):
+        ws.cell(5, 1, G.get("motivo") or "No se calculó la provisión.").font = B
+        return
+    r = 4
+
+    def sec(t):
+        nonlocal r
+        r += 2
+        ws.cell(r, 1, t).font = B
+
+    def fila(lab, v, bold=False, fill=None, obs="", fmt=NF):
+        nonlocal r
+        r += 1
+        ws.cell(r, 1, lab).font = B if bold else Font()
+        c = ws.cell(r, 2, v)
+        c.number_format = fmt
+        if bold:
+            c.font = B
+            c.border = thin
+        if fill:
+            c.fill = fill
+        if obs:
+            ws.cell(r, 3, obs).font = Font(italic=True, size=8)
+        return r
+
+    sec("1. Determinación de la ganancia neta imponible")
+    fila("Resultado contable en valores históricos (sin RECPAM)", G["res_nom"],
+         obs="Ventas − costo − gastos (incl. amortizaciones) + otros ingresos + resultados financieros nominales")
+    for n, s in G["noded"]:
+        fila(f"(+) No deducible: {n}", s, fill=INP, obs="Revisar deducibilidad")
+    fila("(+/−) Ajuste por inflación impositivo (ver PT AxI impositivo / punto 2)", G["aj_imp"])
+    fila("(−) Quebrantos de ejercicios anteriores", -G["quebr"], fill=INP)
+    fila("▸ GANANCIA NETA IMPONIBLE", G["gni"], bold=True)
+    fila("Alícuota marginal (art. 73, escala del ejercicio iniciado en " + str(G["anio"]) + ")", G["alic"],
+         fill=INP, fmt="0%", obs="Verificar escala vigente publicada por ARCA")
+    fila("▸ IMPUESTO DETERMINADO", G["imp"], bold=True, fill=T)
+
+    sec("2. Ajuste por inflación impositivo (cálculo usado en la provisión)")
+    fila("Activo computable al inicio (EECC anterior)", G["act"])
+    fila("Pasivo computable al inicio (EECC anterior)", G["pas"])
+    fila("Ajuste estático = −(activo − pasivo) × (coef − 1)", G["aj_est"])
+    fila("Aportes de capital integrados del ejercicio", G["aportes_int"],
+         obs="Primer ejercicio: capital integrado (sin el pendiente de integración)" if not X["tiene_prior"] else "")
+    fila("Coeficiente aplicado a los aportes", G["coef_ap"], fill=INP, fmt="0.000000",
+         obs="Reemplazar por el coeficiente IPC del mes del aporte (tabla ARCA)")
+    fila("Ajuste dinámico = −aportes × (coef − 1)", G["aj_din"])
+    fila("▸ AJUSTE POR INFLACIÓN IMPOSITIVO", G["aj_imp"], bold=True,
+         obs="Se asume que procede (variación IPC 36 meses > 100%), imputación 100%")
+
+    sec("3. Impuesto sobre los débitos y créditos bancarios (Ley 25.413)")
+    fila("Pago a cuenta disponible", G["P"])
+    fila("Condición", "MiPyME (100% computable)" if G["es_mipyme"] else "No MiPyME (33% computable)",
+         fmt="@", fill=INP)
+    fila("Computado contra el impuesto determinado", G["usado"])
+    if G["es_mipyme"]:
+        fila("Remanente", G["rem"])
+    fila("▸ Saldo trasladable al ejercicio siguiente (33%)", G["tras"], bold=True)
+    fila("▸ Imputado a gasto (no trasladable)", G["gasto"], bold=True)
+
+    sec("4. Retenciones, percepciones y anticipos de ganancias")
+    for n, s in G["rets"]:
+        fila(n, s)
+    fila("Aplicados contra el impuesto", G["aplic"])
+    fila("▸ Saldo de libre disponibilidad", G["libre"], bold=True)
+
+    sec("5. Saldo de la declaración jurada")
+    fila("Impuesto determinado", G["imp"])
+    fila("(−) Ley 25.413 computada", -G["usado"])
+    fila("(−) Retenciones / percepciones / anticipos", -G["aplic"])
+    fila("▸ IMPUESTO A INGRESAR", G["a_pagar"], bold=True, fill=T)
+    fila("Base para anticipos del ejercicio siguiente", G["anticipos_base"])
+
+    sec("6. Asiento de provisión (incluido en «Asientos de ajuste» y en el archivo de importación)")
+    for c, v, nv in G["movs"]:
+        r += 1
+        ws.cell(r, 1, ("" if v > 0 else "      a ") + c + ("  (cuenta nueva)" if nv else ""))
+        ws.cell(r, 2 if v > 0 else 3, abs(v)).number_format = NF
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # Asientos para llevar el sistema al balance presentado
 # ════════════════════════════════════════════════════════════════════════════
 def armar_asientos(a, X):
     """Devuelve (asientos, control). Cada asiento: dict(n, titulo, lineas=[(cuenta, debe, haber, nueva)])."""
     cuentas = X["cuentas"]
     nombres = {nkey(n): n for n, _, _ in cuentas}
-    saldo = {n: s for n, s, _ in cuentas}          # saldo deudor positivo
+    # saldo inicial = sumas y saldos tal como vino del sistema (sin la provisión de ganancias)
+    ss = X.get("cuentas_ss") or [(n, s) for n, s, _ in cuentas]
+    en_ss = {n for n, _ in ss}
+    saldo = {n: s for n, s in ss}                   # saldo deudor positivo
 
     def cta(preferidas, nueva):
         for p in preferidas:
             for kn, n in nombres.items():
                 if re.search(p, kn):
                     return n, False
-        return nueva, True
+        return nueva, nkey(nueva) not in PLAN_XUBIO
 
     asientos = []
 
@@ -1668,6 +1933,10 @@ def armar_asientos(a, X):
         movs.append((rna_c, -(I["rna"] - sp["rna"]), rna_n))
         movs.append((recpam, -sum(m[1] for m in movs), recpam_n))
         asiento(f"Reexpresión del patrimonio neto al inicio (coeficiente {X['cof']:.5f}".replace(".", ",") + ")", movs)
+    elif X.get("aportes_aj"):
+        aj_c, aj_n = cta([r"ajuste (de|del) capital"], "Ajuste de Capital")
+        asiento(f"Reexpresión del capital suscripto en el ejercicio (coeficiente {X['cof']:.5f}".replace(".", ",") + ")",
+                [(recpam, X["aportes_aj"], recpam_n), (aj_c, -X["aportes_aj"], aj_n)])
 
     # 3. Reexpresión de bienes de uso y 4. amortizaciones del ejercicio
     movs3, movs4 = [], []
@@ -1693,13 +1962,19 @@ def armar_asientos(a, X):
         asiento("Reexpresión de bienes de uso y de sus amortizaciones acumuladas al inicio", movs3)
     asiento("Amortizaciones de bienes de uso del ejercicio", movs4)
 
+    # Provisión del impuesto a las ganancias y cómputo de la Ley 25.413
+    G = X.get("ganancias") or {}
+    if G.get("aplica") and G.get("movs"):
+        asiento("Provisión del impuesto a las ganancias, cómputo Ley 25.413 y retenciones (ver PT Ganancias)",
+                [(c, v, nv) for c, v, nv in G["movs"]])
+
     # 5. Refundición de cuentas de resultado
-    res_c, res_n = cta([r"^resultados? del ejercicio$"], "Resultado del ejercicio")
+    res_c, res_n = cta([r"^resultados? del ejercicio$"], "Resultado del Ejercicio")
     movs, tot = [], 0.0
     for c, v in list(saldo.items()):
         k = clasificar(c)
         if k in ("ventas", "costo", "gcom", "gadm", "amort", "rfyt", "oi", "ig") and abs(v) > 0.005:
-            movs.append((c, -v, c in (gasto_c, recpam) and (gasto_n if c == gasto_c else recpam_n)))
+            movs.append((c, -v, c not in en_ss and nkey(c) not in PLAN_XUBIO))
             tot += v
     if movs:
         movs.append((res_c, tot, res_n))
@@ -1800,6 +2075,32 @@ def escribir_asientos(wb, a, X):
         ws.cell(r, 4, round(sis, 2)).number_format = NF
         ws.cell(r, 5, round(bal, 2)).number_format = NF
         ws.cell(r, 6, f"=D{r}-E{r}").number_format = NF
+
+
+def escribir_xubio(path, a, X):
+    """Archivo de importación de asientos manuales de Xubio (modelo FECHA | CONCEPTO | CIRCUITOCONTABLE | CUENTA |
+    DEBE | HABER | ORGANIZACION | CENTRODECOSTO | DESCRIPCION): una fila de cabecera por asiento y luego sus líneas."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Hoja1"
+    cols = ["FECHA", "CONCEPTO", "CIRCUITOCONTABLE", "CUENTA", "DEBE", "HABER", "ORGANIZACION", "CENTRODECOSTO",
+            "DESCRIPCION"]
+    ws.append(cols)
+    for c, w in zip("ABCDEFGHI", [12, 70, 18, 42, 16, 16, 18, 16, 40]):
+        ws.column_dimensions[c].width = w
+    NEW = PatternFill("solid", fgColor="FFF2CC")
+    fecha = datetime.combine(X["cierre"], datetime.min.time())
+    for asi in X.get("asientos", []):
+        ws.append([fecha, f"Ajuste cierre {asi['n']} - {asi['titulo']}"[:120], "default"])
+        ws.cell(ws.max_row, 1).number_format = "dd/mm/yyyy"
+        for cta_, d, h, nueva in sorted(asi["lineas"], key=lambda l: l[1] == 0):
+            ws.append([None, None, None, cta_, round(d, 2) if d else None, round(h, 2) if h else None, None, None,
+                       "Cuenta nueva: dar de alta en el plan antes de importar" if nueva else None])
+            if nueva:
+                ws.cell(ws.max_row, 4).fill = NEW
+    wb.save(path)
 
 
 def subtitulo(a, X):
@@ -2048,6 +2349,11 @@ def main(argv=None):
     ap.add_argument("--cargo", default="", help="Cargo del representante (si se omite, según tipo societario)")
     ap.add_argument("--tipo-societario", default="")
     ap.add_argument("--fecha-informe", default="", help="YYYY-MM-DD (por defecto, hoy)")
+    ap.add_argument("--mipyme", default="", help="Sí/No: impuesto a los débitos y créditos computable al 100%%")
+    ap.add_argument("--quebrantos", type=float, default=0.0, help="Quebrantos impositivos de ejercicios anteriores")
+    ap.add_argument("--sin-axi-impositivo", dest="axi_impositivo", action="store_false",
+                    help="No computar el ajuste por inflación impositivo")
+    ap.add_argument("--xubio", default=None, help="ruta del .xlsx de asientos para importar en Xubio")
     ap.add_argument("--output", required=True, help="ruta del .xlsx")
     ap.add_argument("--pdf", default=None, help="ruta del .pdf (por defecto junto al xlsx)")
     a = ap.parse_args(argv)
@@ -2066,13 +2372,21 @@ def main(argv=None):
                             "del ejercicio anterior de esta sociedad.")
         cuit_pdf = re.sub(r"\D", "", prior.text[:4000])
         X = calcular(a, cuentas, prior)
+        G = liquidar_ganancias(a, X)
+        if G["aplica"] and G["movs"]:
+            X = calcular(a, aplicar_movs(cuentas, G["movs"]), prior)
+        X["ganancias"] = G
+        X["cuentas_ss"] = cuentas
+        X["warn"] += G["warn"]
         S, notas, anx, nota_n = armar(a, X)
         escribir_xlsx(a.output, a, X, S, notas)
+        xubio_path = a.xubio or re.sub(r"\.xlsx$", "", a.output) + "_xubio.xlsx"
+        escribir_xubio(xubio_path, a, X)
         pdf_path = a.pdf or re.sub(r"\.xlsx$", "", a.output) + ".pdf"
         escribir_pdf(pdf_path, a, X, S, notas)
         meta = dict(notas_rango=f"1 a {4 if X['C']['pn'] < 0 else 3}",
                     anexos_rango=("I" if len(anx) == 1 else f"I a {list(anx.values())[-1]}"),
-                    advertencias=X["warn"], pdf=pdf_path)
+                    advertencias=X["warn"], pdf=pdf_path, xubio=xubio_path)
         with open(re.sub(r"\.xlsx$", "", a.output) + ".meta.json", "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
         for w in X["warn"]:
