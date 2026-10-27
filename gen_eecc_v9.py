@@ -612,7 +612,13 @@ def calcular(a, cuentas, prior):
             warn.append(f"Bienes de uso '{tipo}': el saldo bajó respecto del ejercicio anterior; "
                         "se expuso como baja. Verificar.")
         o_cie = o_ini + altas_h - bajas_h
-        if axi_sistema:
+        # ¿Este bien ya fue reexpresado en el sistema aunque el PN no? (se cargaron solo algunos asientos)
+        ya_reexp = (not axi_sistema and tiene_prior and p["origen"] > 0 and tipo in bu_orig and
+                    abs(bu_orig[tipo] - o_ini) <= max(1.0, o_ini * 0.0005))
+        if ya_reexp:
+            warn.append(f"Bienes de uso '{tipo}': el valor de origen del sumas y saldos ya está reexpresado "
+                        "(coincide con el anterior × coeficiente); se respetaron los saldos del sistema.")
+        if axi_sistema or ya_reexp:
             # valores de origen y amortización acumulada tal como están en el sistema (ya reexpresados)
             o_cie = round(bu_orig.get(tipo, 0.0), 2)
             altas_h, bajas_h = max(o_cie - o_ini, 0.0), max(o_ini - o_cie, 0.0)
@@ -621,12 +627,13 @@ def calcular(a, cuentas, prior):
         bu_rows.append(dict(tipo=tipo, o_ini=o_ini, altas=altas_h, bajas=bajas_h, o_cie=o_cie,
                             a_ini=a_ini, tasa=tasa, amort=amort, a_cie=a_ini + amort,
                             neto=o_cie - a_ini - amort, neto_ant=rx(p["neto"]),
-                            o_ant=p["origen"], a_ant=p["acum"], altas_nom=max(altas_nom, 0.0)))
+                            o_ant=p["origen"], a_ant=p["acum"], altas_nom=max(altas_nom, 0.0) if not ya_reexp
+                            else max(altas_h / COF ** 0.5, 0.0), sistema=axi_sistema or ya_reexp))
     if amort_booked:
         tot_o = sum(r["o_cie"] for r in bu_rows) or 1
         for r in bu_rows:
             r["amort"] = round(amort_booked * r["o_cie"] / tot_o, 2)
-            if axi_sistema:      # la acumulada del sistema ya incluye la amortización registrada
+            if r.get("sistema"):  # la acumulada del sistema ya incluye la amortización registrada
                 r["a_ini"] = round(r["a_ini"] - r["amort"], 2)
             r["a_cie"] = r["a_ini"] + r["amort"]
             r["neto"] = r["o_cie"] - r["a_cie"]
