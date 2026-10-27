@@ -565,6 +565,17 @@ def calcular(a, cuentas, prior):
     # asientos de reexpresión; los papeles de trabajo quedan como control.
     recpam_ss = round(sum(s for n, s, k in clas if k == "rfyt" and re.search(r"recpam", nkey(n))), 2)
     axi_sistema = abs(recpam_ss) > 1 or bool(getattr(a, "ss_ajustado", False))
+    if axi_sistema and tiene_prior and prior.v.get("pn") is not None:
+        # Hay una cuenta RECPAM con saldo, pero el PN de inicio sigue en valores históricos (p. ej. RECPAM
+        # compensado con «Diferencia de cambio»): el ajuste NO está registrado; se reexpresa normalmente.
+        pn_ss_chk = -sum(s for n, s, k in clas if k in ("cap", "aj", "apirr", "resleg", "rna"))
+        pn_ant = prior.g("pn")
+        if abs(pn_ss_chk - pn_ant) <= abs(pn_ss_chk - pn_ant * COF):
+            axi_sistema = False
+            a.ss_ajustado = False
+            a.ss_solo_ajustado = False
+            warn.append("El sumas y saldos figura como «ajustado» o tiene saldo en RECPAM, pero el patrimonio neto "
+                        "está en valores históricos: se reexpresó con el coeficiente y el RECPAM se recalculó.")
 
     # ── Bienes de uso ──
     bu_ss, bu_orig, bu_acum = {}, {}, {}
