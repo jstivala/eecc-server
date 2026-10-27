@@ -56,6 +56,7 @@ async def generar(
     cargo:         str   = Form(default=""),
     tipo_societario: str = Form(default=""),
     fecha_inicio:  str   = Form(default=""),   # YYYY-MM-DD: solo primer ejercicio (fecha de constitución)
+    actividad:     str   = Form(default=""),   # actividad principal (si no hay EECC anterior de donde copiarla)
     mipyme:        str   = Form(default=""),   # "Sí" / "No" (vacío = se asume MiPyME, con advertencia)
     quebrantos:    str   = Form(default=""),   # quebrantos impositivos de ejercicios anteriores
 ):
@@ -83,6 +84,8 @@ async def generar(
             "--mipyme",        mipyme,
             "--output",        out_path,
         ]
+        if actividad and actividad.strip():
+            cmd += ["--actividad", actividad.strip()]
         if fecha_inicio and fecha_inicio.strip():
             cmd += ["--fecha-inicio", fecha_inicio.strip()[:10]]
         try:
