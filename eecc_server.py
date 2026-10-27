@@ -52,6 +52,9 @@ async def generar(
     cof:           float = Form(...),
     cap_nominal:   float = Form(...),
     sipa_monto:    str   = Form(default=""),
+    representante: str   = Form(default=""),
+    cargo:         str   = Form(default=""),
+    tipo_societario: str = Form(default=""),
 ):
     tmp = tempfile.mkdtemp(prefix="eecc_")
     try:
@@ -71,6 +74,9 @@ async def generar(
             "--ss-actual",     ss_act_path,
             "--domicilio",     domicilio,
             "--matricula-igj", matricula_igj,
+            "--representante", representante,
+            "--cargo",         cargo,
+            "--tipo-societario", tipo_societario,
             "--output",        out_path,
         ]
 
@@ -390,7 +396,8 @@ def _fill_informe(template_path: str, out_path: str,
     fecha = datetime.strptime(fecha_cierre, "%Y-%m-%d")
     fecha_larga  = f"{fecha.day} de {MONTHS_ES[fecha.month]} de {fecha.year}"
     mes_anio     = f"{MONTHS_ES[fecha.month]} de {fecha.year}"
-    today        = date.today()
+    from zoneinfo import ZoneInfo
+    today        = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).date()
     fecha_inf    = f"{today.day} de {MONTHS_ES[today.month]} de {today.year}"
     sipa_txt     = (sipa_monto or "").strip()
     try:

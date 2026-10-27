@@ -1828,6 +1828,22 @@ def caratula_lineas(a, X):
 # ════════════════════════════════════════════════════════════════════════════
 # Salida PDF (ReportLab)
 # ════════════════════════════════════════════════════════════════════════════
+def hoy_ar():
+    """Fecha de hoy en Buenos Aires (el servidor corre en UTC)."""
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).date()
+
+
+def cargo_por_tipo(tipo, empresa):
+    t = nkey(tipo or "")
+    e = nkey(empresa or "")
+    if "srl" in t or re.search(r"\bs\.?\s?r\.?\s?l\.?$", e):
+        return "Socio Gerente"
+    if "sas" in t or re.search(r"\bs\.?\s?a\.?\s?s\.?$", e):
+        return "Administrador Titular"
+    return "Presidente"
+
+
 def escribir_pdf(path, a, X, S, notas):
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib import colors
@@ -1851,6 +1867,15 @@ def escribir_pdf(path, a, X, S, notas):
     st_hd = ParagraphStyle("hd", fontName="Helvetica-Bold", fontSize=7, leading=8.5, alignment=TA_CENTER,
                            textColor=colors.white)
 
+    import os
+    from reportlab.lib.utils import ImageReader
+    firma_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "firma_contador.png")
+    firma = ImageReader(firma_path) if os.path.exists(firma_path) else None
+    cargo = a.cargo or cargo_por_tipo(a.tipo_societario, a.empresa)
+    f_inf = (datetime.strptime(a.fecha_informe, "%Y-%m-%d").date() if a.fecha_informe else hoy_ar())
+    leyenda = f"Firmado a efectos de su identificación con mi informe de fecha {f_inf.strftime('%d/%m/%Y')}"
+    FIRMA_H = 4.3 * cm   # alto reservado para las firmas
+
     def deco(canv, doc):
         canv.saveState()
         w, h = canv._pagesize
@@ -1861,19 +1886,48 @@ def escribir_pdf(path, a, X, S, notas):
                              + (f" — Inscripción IGJ N° {a.matricula_igj}" if a.matricula_igj else ""))
         canv.setStrokeColor(AZUL)
         canv.line(1.5 * cm, h - 1.2 * cm, w - 1.5 * cm, h - 1.2 * cm)
-        canv.setFont("Helvetica", 7)
-        canv.drawString(1.5 * cm, 0.9 * cm, "Las notas y anexos que se acompañan forman parte integrante "
-                                            "de los estados contables.")
-        canv.drawRightString(w - 1.5 * cm, 0.9 * cm, f"Página {doc.page}")
+        canv.setFont("Helvetica-Oblique", 7)
+        canv.drawString(1.5 * cm, FIRMA_H + 0.35 * cm, "Las notas y anexos que se acompañan forman parte integrante "
+                                                      "de los estados contables.")
+        # ── firma del representante legal (izquierda) ──
+        xl = 1.5 * cm + 3.6 * cm
+        canv.setStrokeColor(colors.black)
+        canv.setLineWidth(0.5)
+        canv.line(xl - 3.2 * cm, 2.0 * cm, xl + 3.2 * cm, 2.0 * cm)
+        canv.setFont("Helvetica-Bold", 8)
+        canv.drawCentredString(xl, 1.62 * cm, a.representante or "")
+        canv.setFont("Helvetica", 7.5)
+        canv.drawCentredString(xl, 1.27 * cm, cargo)
+        canv.drawCentredString(xl, 0.95 * cm, a.empresa)
+        # ── firma y sello del contador (derecha) ──
+        xr = w - 1.5 * cm - 3.6 * cm
+        canv.setFont("Helvetica-Oblique", 6)
+        canv.drawCentredString(xr, FIRMA_H - 0.05 * cm, leyenda)
+        if firma:
+            iw, ih = firma.getSize()
+            fh = 2.9 * cm
+            fw = fh * iw / ih
+            canv.drawImage(firma, xr - fw / 2, 0.75 * cm, width=fw, height=fh, mask="auto")
+        canv.setFont("Helvetica", 6.5)
+        canv.drawRightString(w - 1.5 * cm, 0.45 * cm, f"Página {doc.page}")
+        canv.restoreState()
+
+    def deco_caratula(canv, doc):
+        canv.saveState()
+        w, h = canv._pagesize
+        canv.setFont("Helvetica", 6.5)
+        canv.drawRightString(w - 1.5 * cm, 0.45 * cm, f"Página {doc.page}")
         canv.restoreState()
 
     pw, ph = A4
     lw, lh = landscape(A4)
     doc = BaseDocTemplate(path, pagesize=A4, title=f"EECC {a.empresa} {X['cierre'].year}",
                           author="Juan Pablo Stivala")
-    fr_p = Frame(1.5 * cm, 1.4 * cm, pw - 3 * cm, ph - 3.0 * cm, id="p")
-    fr_l = Frame(1.5 * cm, 1.4 * cm, lw - 3 * cm, lh - 3.0 * cm, id="l")
-    doc.addPageTemplates([PageTemplate(id="P", frames=[fr_p], pagesize=A4, onPage=deco),
+    fr_c = Frame(1.5 * cm, 1.4 * cm, pw - 3 * cm, ph - 3.0 * cm, id="c")
+    fr_p = Frame(1.5 * cm, FIRMA_H + 0.8 * cm, pw - 3 * cm, ph - FIRMA_H - 2.4 * cm, id="p")
+    fr_l = Frame(1.5 * cm, FIRMA_H + 0.8 * cm, lw - 3 * cm, lh - FIRMA_H - 2.4 * cm, id="l")
+    doc.addPageTemplates([PageTemplate(id="C", frames=[fr_c], pagesize=A4, onPage=deco_caratula),
+                          PageTemplate(id="P", frames=[fr_p], pagesize=A4, onPage=deco),
                           PageTemplate(id="L", frames=[fr_l], pagesize=landscape(A4), onPage=deco)])
     E = []
 
@@ -1893,7 +1947,7 @@ def escribir_pdf(path, a, X, S, notas):
                            ("VALIGN", (0, 0), (-1, -1), "TOP"), ("TOPPADDING", (0, 0), (-1, -1), 4),
                            ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
     E.append(t)
-    cur = "P"
+    cur = "C"
 
     for stt in S:
         tpl = "L" if stt["land"] else "P"
@@ -1984,6 +2038,10 @@ def main(argv=None):
     ap.add_argument("--domicilio", default="")
     ap.add_argument("--matricula-igj", default="")
     ap.add_argument("--actividad", default="")
+    ap.add_argument("--representante", default="", help="Nombre y apellido del representante legal")
+    ap.add_argument("--cargo", default="", help="Cargo del representante (si se omite, según tipo societario)")
+    ap.add_argument("--tipo-societario", default="")
+    ap.add_argument("--fecha-informe", default="", help="YYYY-MM-DD (por defecto, hoy)")
     ap.add_argument("--output", required=True, help="ruta del .xlsx")
     ap.add_argument("--pdf", default=None, help="ruta del .pdf (por defecto junto al xlsx)")
     a = ap.parse_args(argv)
