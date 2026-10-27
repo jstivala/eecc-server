@@ -55,6 +55,7 @@ async def generar(
     representante: str   = Form(default=""),
     cargo:         str   = Form(default=""),
     tipo_societario: str = Form(default=""),
+    fecha_inicio:  str   = Form(default=""),   # YYYY-MM-DD: solo primer ejercicio (fecha de constitución)
     mipyme:        str   = Form(default=""),   # "Sí" / "No" (vacío = se asume MiPyME, con advertencia)
     quebrantos:    str   = Form(default=""),   # quebrantos impositivos de ejercicios anteriores
 ):
@@ -82,6 +83,8 @@ async def generar(
             "--mipyme",        mipyme,
             "--output",        out_path,
         ]
+        if fecha_inicio and fecha_inicio.strip():
+            cmd += ["--fecha-inicio", fecha_inicio.strip()[:10]]
         try:
             q = float(str(quebrantos).replace(".", "").replace(",", ".")) if str(quebrantos).strip() else 0.0
         except ValueError:
