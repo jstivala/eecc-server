@@ -1975,9 +1975,10 @@ def armar_asientos(a, X):
     nombres = {nkey(n): n for n, _, _ in cuentas}
     # saldo inicial = sumas y saldos tal como vino del sistema (sin la provisión de ganancias)
     ss = X.get("cuentas_ss") or [(n, s) for n, s, _ in cuentas]
-    libros = X.get("hist")                          # saldos históricos (de libros), si el SS los trae
+    # Si el SS trae el ajuste por inflación de Xubio (saldo ajustado / RECPAM), esos asientos ya están generados en
+    # el sistema: se parte del saldo ajustado y no se repiten.
     en_ss = {n for n, _ in ss}
-    saldo = {n: s for n, s in (libros or ss)}       # saldo deudor positivo
+    saldo = {n: s for n, s in ss}                   # saldo deudor positivo
 
     def cta(preferidas, nueva):
         for p in preferidas:
@@ -2002,13 +2003,6 @@ def armar_asientos(a, X):
 
     recpam, recpam_n = cta([r"^recpam$", r"recpam"], "RECPAM")
     rna_c, rna_n = cta([r"resultados? no asignados?", r"^rna$"], "Resultados no asignados")
-
-    # 0. Ajuste por inflación calculado por Xubio (diferencia entre saldo ajustado y saldo de libros)
-    if libros:
-        adj = {n: s for n, s in ss}
-        movs = [(n, round(adj.get(n, 0.0) - saldo.get(n, 0.0), 2), False) for n in adj]
-        asiento("Ajuste por inflación según Xubio (saldo ajustado − saldo histórico). No importar si ya está "
-                "registrado en el sistema", movs)
 
     # 1. Reclasificación del resultado del ejercicio anterior a Resultados no asignados
     movs = []
@@ -2077,7 +2071,8 @@ def armar_asientos(a, X):
             tot += v
     if movs:
         movs.append((res_c, tot, res_n))
-        asiento("Refundición de cuentas de resultado (si el sistema no la hace automáticamente)", movs)
+        asiento("Refundición de cuentas de resultado (referencia: la genera Xubio en el asiento de cierre)", movs)
+        asientos[-1]["solo_referencia"] = True
 
     # Control: sistema después de los asientos vs. balance presentado
     rub = {}
@@ -2191,8 +2186,9 @@ def escribir_xubio(path, a, X):
         ws.column_dimensions[c].width = w
     NEW = PatternFill("solid", fgColor="FFF2CC")
     fecha = datetime.combine(X["cierre"], datetime.min.time())
-    for asi in X.get("asientos", []):
-        ws.append([fecha, f"Ajuste cierre {asi['n']} - {asi['titulo']}"[:120], "default"])
+    importables = [x for x in X.get("asientos", []) if not x.get("solo_referencia")]
+    for i, asi in enumerate(importables, 1):
+        ws.append([fecha, f"Ajuste cierre {i} - {asi['titulo']}"[:120], "default"])
         ws.cell(ws.max_row, 1).number_format = "dd/mm/yyyy"
         for cta_, d, h, nueva in sorted(asi["lineas"], key=lambda l: l[1] == 0):
             ws.append([None, None, None, cta_, round(d, 2) if d else None, round(h, 2) if h else None, None, None,
