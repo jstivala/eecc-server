@@ -1874,7 +1874,29 @@ def escribir_pdf(path, a, X, S, notas):
     cargo = a.cargo or cargo_por_tipo(a.tipo_societario, a.empresa)
     f_inf = (datetime.strptime(a.fecha_informe, "%Y-%m-%d").date() if a.fecha_informe else hoy_ar())
     leyenda = f"Firmado a efectos de su identificación con mi informe de fecha {f_inf.strftime('%d/%m/%Y')}"
-    FIRMA_H = 4.3 * cm   # alto reservado para las firmas
+    FIRMA_H = 0.0         # las firmas van a continuación de cada cuadro
+
+    def bloque_firmas(width):
+        """Leyenda + firma del representante (izq.) y firma/sello del contador (der.), como flowable."""
+        from reportlab.platypus import Image as RLImage
+        st_n = ParagraphStyle("fn", fontName="Helvetica-Bold", fontSize=8, leading=10, alignment=TA_CENTER)
+        st_c2 = ParagraphStyle("fc", fontName="Helvetica", fontSize=7.5, leading=9.5, alignment=TA_CENTER)
+        izq = Table([[""], [Paragraph(a.representante or "&nbsp;", st_n)], [Paragraph(cargo, st_c2)],
+                     [Paragraph(a.empresa, st_c2)]], colWidths=[6.4 * cm], rowHeights=[2.0 * cm, None, None, None])
+        izq.setStyle(TableStyle([("LINEBELOW", (0, 0), (0, 0), 0.5, colors.black),
+                                 ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
+        if firma:
+            iw, ih = firma.getSize()
+            fh = 2.9 * cm
+            der = RLImage(firma_path, width=fh * iw / ih, height=fh)
+        else:
+            der = ""
+        width = min(width, 17.0 * cm)   # en hojas apaisadas, el bloque queda centrado y más junto
+        t = Table([[izq, "", der]], colWidths=[6.6 * cm, width - 13.2 * cm, 6.6 * cm], hAlign="CENTER")
+        t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "BOTTOM"), ("ALIGN", (2, 0), (2, 0), "CENTER"),
+                               ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                               ("BOTTOMPADDING", (0, 0), (-1, -1), 0)]))
+        return t
 
     def deco(canv, doc):
         canv.saveState()
@@ -1886,28 +1908,6 @@ def escribir_pdf(path, a, X, S, notas):
                              + (f" — Inscripción IGJ N° {a.matricula_igj}" if a.matricula_igj else ""))
         canv.setStrokeColor(AZUL)
         canv.line(1.5 * cm, h - 1.2 * cm, w - 1.5 * cm, h - 1.2 * cm)
-        canv.setFont("Helvetica-Oblique", 7)
-        canv.drawString(1.5 * cm, FIRMA_H + 0.35 * cm, "Las notas y anexos que se acompañan forman parte integrante "
-                                                      "de los estados contables.")
-        # ── firma del representante legal (izquierda) ──
-        xl = 1.5 * cm + 3.6 * cm
-        canv.setStrokeColor(colors.black)
-        canv.setLineWidth(0.5)
-        canv.line(xl - 3.2 * cm, 2.0 * cm, xl + 3.2 * cm, 2.0 * cm)
-        canv.setFont("Helvetica-Bold", 8)
-        canv.drawCentredString(xl, 1.62 * cm, a.representante or "")
-        canv.setFont("Helvetica", 7.5)
-        canv.drawCentredString(xl, 1.27 * cm, cargo)
-        canv.drawCentredString(xl, 0.95 * cm, a.empresa)
-        # ── firma y sello del contador (derecha) ──
-        xr = w - 1.5 * cm - 3.6 * cm
-        canv.setFont("Helvetica-Oblique", 6)
-        canv.drawCentredString(xr, FIRMA_H - 0.05 * cm, leyenda)
-        if firma:
-            iw, ih = firma.getSize()
-            fh = 2.9 * cm
-            fw = fh * iw / ih
-            canv.drawImage(firma, xr - fw / 2, 0.75 * cm, width=fw, height=fh, mask="auto")
         canv.setFont("Helvetica", 6.5)
         canv.drawRightString(w - 1.5 * cm, 0.45 * cm, f"Página {doc.page}")
         canv.restoreState()
@@ -1924,8 +1924,8 @@ def escribir_pdf(path, a, X, S, notas):
     doc = BaseDocTemplate(path, pagesize=A4, title=f"EECC {a.empresa} {X['cierre'].year}",
                           author="Juan Pablo Stivala")
     fr_c = Frame(1.5 * cm, 1.4 * cm, pw - 3 * cm, ph - 3.0 * cm, id="c")
-    fr_p = Frame(1.5 * cm, FIRMA_H + 0.8 * cm, pw - 3 * cm, ph - FIRMA_H - 2.4 * cm, id="p")
-    fr_l = Frame(1.5 * cm, FIRMA_H + 0.8 * cm, lw - 3 * cm, lh - FIRMA_H - 2.4 * cm, id="l")
+    fr_p = Frame(1.5 * cm, 1.0 * cm, pw - 3 * cm, ph - 2.6 * cm, id="p")
+    fr_l = Frame(1.5 * cm, 1.0 * cm, lw - 3 * cm, lh - 2.6 * cm, id="l")
     doc.addPageTemplates([PageTemplate(id="C", frames=[fr_c], pagesize=A4, onPage=deco_caratula),
                           PageTemplate(id="P", frames=[fr_p], pagesize=A4, onPage=deco),
                           PageTemplate(id="L", frames=[fr_l], pagesize=landscape(A4), onPage=deco)])
@@ -1991,6 +1991,12 @@ def escribir_pdf(path, a, X, S, notas):
         t = Table(data, colWidths=[labw] + [numw] * n, repeatRows=1)
         t.setStyle(TableStyle(styles))
         E.append(t)
+        E.append(KeepTogether([
+            Spacer(1, 0.2 * cm),
+            Paragraph("Las notas y anexos que se acompañan forman parte integrante de los estados contables.",
+                      ParagraphStyle("ley", fontName="Helvetica-Oblique", fontSize=7, leading=9)),
+            Spacer(1, 0.5 * cm),
+            bloque_firmas(width)]))
 
     # Notas
     if cur != "P":
