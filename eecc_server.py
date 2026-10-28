@@ -141,7 +141,8 @@ async def generar(
                           empresa, cuit, domicilio, matricula_igj,
                           fecha_cierre.strip(), sipa_monto,
                           notas_rango=meta.get("notas_rango", "1 a 3"),
-                          anexos_rango=meta.get("anexos_rango", "I a II"))
+                          anexos_rango=meta.get("anexos_rango", "I a II"),
+                          tipo_societario=tipo_societario)
             if lo:
                 _libreoffice_convert(lo, informe_filled, tmp, informe_pdf)
             else:
@@ -408,7 +409,8 @@ def _fmt_cuit(c: str) -> str:
 def _fill_informe(template_path: str, out_path: str,
                   empresa: str, cuit: str, domicilio: str, matricula_igj: str,
                   fecha_cierre: str, sipa_monto: str,
-                  notas_rango: str = "1 a 3", anexos_rango: str = "I a II"):
+                  notas_rango: str = "1 a 3", anexos_rango: str = "I a II",
+                  tipo_societario: str = ""):
     """Rellena el template del Informe de Auditoría con los datos del cliente."""
     from docx import Document
 
@@ -443,6 +445,13 @@ def _fill_informe(template_path: str, out_path: str,
     }
 
     doc = Document(template_path)
+    if _es_sa(tipo_societario, empresa):
+        _agregar_seccion_sa(doc)
+        for para in doc.paragraphs:          # destinatarios: en las S.A. el informe va al Directorio
+            if para.text.strip() == "Señores Gerentes":
+                for run in para.runs:
+                    run.text = run.text.replace("Gerentes", "Directivos")
+                break
     for para in doc.paragraphs:
         _replace_para(para, replacements)
     for table in doc.tables:
@@ -451,6 +460,64 @@ def _fill_informe(template_path: str, out_path: str,
                 for para in cell.paragraphs:
                     _replace_para(para, replacements)
     doc.save(out_path)
+
+
+def _es_sa(tipo: str, empresa: str) -> bool:
+    """Sociedad anónima (no SAS): por el tipo societario de Notion o, si falta, por la razón social."""
+    t = (tipo or "").upper().replace(".", "").replace(" ", "")
+    if t:
+        return t in ("SA", "SOCIEDADANONIMA")
+    e = (empresa or "").upper().rstrip(". ")
+    return bool(re.search(r"\bS\.?\s?A$", e)) and not re.search(r"\bS\.?\s?A\.?\s?S$", e)
+
+
+SECCION_SA = [   # redacción del modelo de informe de S.A. del estudio (Quattro Construcciones S.A.)
+    ("titulo", "Información distinta de los estados contables y del informe de auditoría correspondiente."),
+    ("texto", "La Dirección de {{EMPRESA}} es responsable de la otra información, que comprende: la Memoria. Esta "
+              "otra información no es parte de los estados contables ni de mi informe de auditoría correspondiente."),
+    ("texto", "Mi opinión sobre los estados contables no cubre la otra información y, por lo tanto, no expreso "
+              "ninguna forma de conclusión que proporcione un grado de seguridad sobre esta."),
+    ("texto", "En relación con mi auditoría de los estados contables, mi responsabilidad es leer la otra información "
+              "y, al hacerlo, considerar si existe una incongruencia significativa entre la otra información y los "
+              "estados contables o el conocimiento obtenido en la auditoría o si parece que existe una incorrección "
+              "significativa en la otra información."),
+    ("texto", "Si, basándome en el trabajo que he realizado, concluyo que existe una incorrección significativa en la "
+              "otra información, estoy obligado a informar de ello. Por todo lo auditado no tengo nada que informar."),
+]
+
+
+def _agregar_seccion_sa(doc):
+    """Inserta «Información distinta de los estados contables…» (Memoria) después de «Fundamento de la opinión»,
+    antes de «Responsabilidades de la Dirección», copiando el formato de los párrafos del template."""
+    import copy
+    paras = doc.paragraphs
+    i_tit = next((i for i, p in enumerate(paras) if p.text.strip().startswith("Fundamento de la opinión")), None)
+    i_resp = next((i for i, p in enumerate(paras) if p.text.strip().startswith("Responsabilidades de la Dirección")),
+                  None)
+    if i_tit is None or i_resp is None:
+        return
+    modelo_tit = paras[i_tit]
+    modelo_txt = paras[i_tit + 1]
+    ancla = paras[i_resp]
+
+    def nuevo(modelo, texto, negrita):
+        el = copy.deepcopy(modelo._p)
+        for r in el.findall(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}r")[1:]:
+            el.remove(r) if r.getparent() is el else r.getparent().remove(r)
+        ancla._p.addprevious(el)
+        from docx.text.paragraph import Paragraph
+        par = Paragraph(el, ancla._parent)
+        if par.runs:
+            par.runs[0].text = texto
+            par.runs[0].bold = negrita
+        return par
+
+    for tipo, texto in SECCION_SA:
+        nuevo(modelo_tit if tipo == "titulo" else modelo_txt, texto, tipo == "titulo")
+    # párrafo en blanco de separación, como el resto del template
+    blanco = next((p for p in paras[i_tit:i_resp] if not p.text.strip()), None)
+    if blanco is not None:
+        ancla._p.addprevious(copy.deepcopy(blanco._p))
 
 
 def _replace_para(para, replacements):
