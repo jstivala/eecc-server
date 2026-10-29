@@ -47,6 +47,7 @@ async def generar(
     cuit:          str   = Form(...),
     domicilio:     str   = Form(default=""),
     matricula_igj: str   = Form(default=""),
+    fecha_inscripcion_igj: str = Form(default=""),   # YYYY-MM-DD: fecha de inscripción en IGJ (carátula)
     nro_ejercicio: int   = Form(default=1),
     fecha_cierre:  str   = Form(...),   # YYYY-MM-DD
     cof:           float = Form(...),
@@ -84,6 +85,8 @@ async def generar(
             "--mipyme",        mipyme,
             "--output",        out_path,
         ]
+        if fecha_inscripcion_igj and fecha_inscripcion_igj.strip():
+            cmd += ["--fecha-inscripcion-igj", fecha_inscripcion_igj.strip()[:10]]
         if actividad and actividad.strip():
             cmd += ["--actividad", actividad.strip()]
         if fecha_inicio and fecha_inicio.strip():
