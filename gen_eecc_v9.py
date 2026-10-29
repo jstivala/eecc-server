@@ -2229,6 +2229,8 @@ def caratula_lineas(a, X):
         ("CUIT", fmt_cuit(a.cuit)),
         ("Domicilio legal", a.domicilio or ""),
         ("Inscripción IGJ", a.matricula_igj or ""),
+    ] + ([("Fecha de inscripción en IGJ", fecha_larga(datetime.strptime(a.fecha_inscripcion_igj[:10], "%Y-%m-%d").date()))]
+         if getattr(a, "fecha_inscripcion_igj", "") else []) + [
         ("Actividad principal", X["actividad"] or ""),
         ("Ejercicio económico N°", str(a.nro_ejercicio)),
         ("Iniciado el", fecha_larga(X["inicio"])),
@@ -2457,6 +2459,7 @@ def main(argv=None):
     ap.add_argument("--eecc-anterior", default=None)
     ap.add_argument("--domicilio", default="")
     ap.add_argument("--matricula-igj", default="")
+    ap.add_argument("--fecha-inscripcion-igj", default="", help="YYYY-MM-DD (va en la carátula)")
     ap.add_argument("--actividad", default="")
     ap.add_argument("--representante", default="", help="Nombre y apellido del representante legal")
     ap.add_argument("--cargo", default="", help="Cargo del representante (si se omite, según tipo societario)")
