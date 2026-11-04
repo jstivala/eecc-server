@@ -1142,8 +1142,17 @@ def armar_notas(a, X, comp_rubros, nota_n):
     for k in comp_rubros:
         filas = []
         if k == "rfyt":
-            filas.append(("RECPAM y otros resultados financieros y por tenencia",
-                          R["rfyt"], A.get("rfyt", 0.0) if comp else None))
+            # Detalle: cuentas financieras (sin RECPAM) + RECPAM abierto en sus componentes
+            otros = 0.0
+            for n, s, kk in X["cuentas"]:
+                if kk == "rfyt" and not re.search(r"recpam|ajuste por inflacion", nkey(n)) and abs(s) > 0.005:
+                    filas.append((n.strip().capitalize(), -s, None))
+                    otros += -s
+            recpam_tot = round(R["rfyt"] - otros, 2)
+            filas.append(("RECPAM", recpam_tot, None))
+            if comp:
+                filas = [(f, x, None) for f, x, _ in filas]
+                filas.append(("Saldos del ejercicio anterior (total del rubro)", 0.0, A.get("rfyt", 0.0)))
             tot = (R["rfyt"], A.get("rfyt", 0.0) if comp else None)
         else:
             sum_prev = 0.0
