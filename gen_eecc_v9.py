@@ -713,7 +713,10 @@ def calcular(a, cuentas, prior):
 
     # ── Resultados ──
     ventas = suma("ventas", -1)
-    compras = suma("costo")
+    # Ajuste de inventario final registrado contra una cuenta de costo (p. ej. «Costo - Ajuste inventario final»):
+    # ya forma parte del resultado vía el inventario de cierre, por lo que no es una compra del ejercicio.
+    aj_inv = sum(s for n, s, k in clas if k == "costo" and re.search(r"ajuste (de )?(inventario|existencias)", nkey(n)))
+    compras = suma("costo") - aj_inv
     bc_ini, bc_cie = P["bc"], C["bc"]
     usa_inventario = bool(bc_ini or bc_cie)
     costo = (bc_ini + compras - bc_cie) if usa_inventario else compras
