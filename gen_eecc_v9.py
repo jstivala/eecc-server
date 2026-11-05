@@ -1578,7 +1578,8 @@ def escribir_papeles(wb, a, X):
     v36 = f"B{r}"
     r += 1
     ws.cell(r, 1, "¿Procede el ajuste? (variación 36 meses > 100%)")
-    ws.cell(r, 2, f'=IF({v36}="","Completar",IF({v36}>100,"SÍ","NO"))').font = B
+    # Si no se cargó la variación de 36 meses se asume que procede (igual que en PT Ganancias) y se marca como supuesto.
+    ws.cell(r, 2, f'=IF({v36}="","SÍ (supuesto: completar B{r - 1})",IF({v36}>100,"SÍ","NO"))').font = B
     proc_ref = f"$B${r}"
     r += 1
     ws.cell(r, 1, "Imputación en el ejercicio (%) — 100% para ejercicios iniciados desde el 01/01/2021")
@@ -1668,19 +1669,33 @@ def escribir_papeles(wb, a, X):
     r += 1
     hdr(ws, r, ["Concepto", "Importe", "Mes (aaaa-mm)", "", "Coef. mes → cierre", "Ajuste", "Signo / observación"])
     movs = []
-    if X["aportes"]:
-        movs.append(("Aportes de capital del ejercicio", X["aportes"], -1, "Aportes: ajuste negativo"))
+    # Aportes: se toma el capital integrado NOMINAL (no el valor reexpresado ni el «Ajuste de capital»: eso no es un
+    # aporte) y se precarga el mes y el coeficiente, con el mismo criterio que usa PT Ganancias.
+    #   · primer ejercicio: el capital se integra en la constitución → coeficiente del ejercicio completo;
+    #   · ejercicios siguientes: no se conoce el mes → mitad del ejercicio (raíz del coeficiente anual).
+    if tp:
+        ap_base, ap_coef = X["aportes_nom"], X["cof"] ** 0.5
+        ap_mes = "mitad del ejercicio (supuesto)"
+    else:
+        ap_base, ap_coef = X["aportes_nom"] - X["integ_pend"], X["cof"]
+        ap_mes = X["inicio"].strftime("%Y-%m")
+    if ap_base > 0.005:
+        movs.append(("Aportes de capital del ejercicio", round(ap_base, 2), -1,
+                     "Aportes: ajuste negativo. Capital integrado nominal; verificar el mes del aporte.",
+                     ap_mes, ap_coef))
     movs += [("Retiros / dividendos pagados", 0.0, 1, "Ajuste positivo"),
              ("Préstamos / anticipos a socios", 0.0, 1, "Ajuste positivo"),
              ("Adquisición de acciones / bienes excluidos", 0.0, 1, "Ajuste positivo"),
              ("Venta de bienes excluidos", 0.0, -1, "Ajuste negativo")]
     d0 = r + 1
-    for lab, v, sg, obs in movs:
+    for lab, v, sg, obs, *extra in movs:
         r += 1
         ws.cell(r, 1, lab)
         num(ws, r, 2, v, fill=INP)
         ws.cell(r, 3).fill = INP
-        num(ws, r, 5, None, CF, fill=INP)
+        if extra:
+            ws.cell(r, 3, extra[0])
+        num(ws, r, 5, extra[1] if extra else None, CF, fill=INP)
         ws.cell(r, 6, f'=IF(E{r}="",0,{sg}*B{r}*(E{r}-1))').number_format = NF
         ws.cell(r, 7, obs).font = Font(size=8, italic=True)
     for _ in range(3):
@@ -1716,7 +1731,7 @@ def escribir_papeles(wb, a, X):
     tot = f"D{r}"
     r += 1
     ws.cell(r, 1, "Imputable en el ejercicio (si procede)").font = B
-    c = ws.cell(r, 4, f'=IF({proc_ref}="SÍ",{tot}*{imp_ref}/100,0)')
+    c = ws.cell(r, 4, f'=IF(LEFT({proc_ref},2)="SÍ",{tot}*{imp_ref}/100,0)')
     c.number_format = NF
     c.font = B
     c.fill = T
@@ -1775,6 +1790,9 @@ def liquidar_ganancias(a, X0):
         G["warn"].append(G["motivo"])
         return G
     G["aplica"] = True
+    if X0["cierre"].year >= 2027:
+        G["warn"].append("El ajuste por inflación impositivo se calcula suponiendo que procede (IPC de los 36 meses "
+                         "anteriores al cierre > 100%). Con cierres desde 2027 conviene verificarlo antes de presentar.")
     R, cof = X0["R"], X0["cof"]
     nombres = [n for n, _, _ in cuentas]
 
@@ -1946,7 +1964,7 @@ def escribir_pt_ganancias(wb, a, X):
         fila(f"(+) No deducible: {n}", s, fill=INP, obs="Revisar deducibilidad")
     fila("(+/−) Ajuste por inflación impositivo (ver PT AxI impositivo / punto 2)", G["aj_imp"])
     fila("(−) Quebrantos de ejercicios anteriores", -G["quebr"], fill=INP)
-    fila("▸ GANANCIA NETA IMPONIBLE", G["gni"], bold=True)
+    r_gni = fila("▸ GANANCIA NETA IMPONIBLE", G["gni"], bold=True)
     fila("Alícuota marginal (art. 73, escala del ejercicio iniciado en " + str(G["anio"]) + ")", G["alic"],
          fill=INP, fmt="0%", obs="Verificar escala vigente publicada por ARCA")
     fila("▸ IMPUESTO DETERMINADO", G["imp"], bold=True, fill=T)
@@ -1991,6 +2009,38 @@ def escribir_pt_ganancias(wb, a, X):
         r += 1
         ws.cell(r, 1, ("" if v > 0 else "      a ") + c + ("  (cuenta nueva)" if nv else ""))
         ws.cell(r, 2 if v > 0 else 3, abs(v)).number_format = NF
+
+    # ── 7. Conciliación resultado contable → impositivo (los importes que se cargan en el F.713) ──
+    sec("7. Conciliación resultado contable → impositivo (para cargar en el F.713)")
+    if not X.get("hist"):
+        r += 1
+        ws.cell(r, 1, "No se arma la conciliación: el sumas y saldos no trae el saldo histórico (solo el ajustado por "
+                      "inflación). Exportar también la columna «Saldo».").font = Font(italic=True, size=9)
+        return
+    R = X["R"]
+    otros_fin = sum(-s for n, s, kk in X["cuentas"]
+                    if kk == "rfyt" and not re.search(r"recpam|ajuste por inflacion", nkey(n)))
+    recpam_perdida = round(-(R["rfyt"] - otros_fin), 2)           # pérdida = positivo (se suma al resultado)
+    # Resultado histórico después de la provisión: el de libros (G["res_nom"], antes de provisionar) menos el gasto
+    # de la Ley 25.413 y el impuesto a las ganancias que se registran con el asiento de provisión.
+    hist_post = round(G["res_nom"] - G["gasto"] - G["imp"], 2)
+    reexp_er = round(hist_post - (R["res"] + recpam_perdida), 2)   # reexpresión de las líneas del ER (plug)
+    r_ctb = fila("Resultado contable (ER del EECC)", R["res"])
+    r_rec = fila("(+) RECPAM contable — F.713: «Resultado del ajuste por inflación contable», ajustes positivos",
+                 recpam_perdida, obs="Nota de resultados financieros y por tenencia del EECC")
+    r_reexp = fila("(−/+) Reexpresión de las líneas del ER ya incluida en ventas, costos y gastos — misma fila, "
+                   "ajustes negativos", reexp_er,
+                   obs="Diferencia entre el ER ajustado y el histórico de libros; contrapartida del RECPAM")
+    r_hist = fila("▸ Resultado histórico (sin inflación contable)", f"=B{r_ctb}+B{r_rec}+B{r_reexp}", bold=True,
+                  obs="Debe coincidir con el resultado del período del ER histórico del sistema (sin ajuste por inflación)")
+    r_ig = fila("(+) Impuesto a las ganancias contabilizado (no deducible)", G["imp"])
+    r_gb = fila("(+) Gasto Ley 25.413 llevado a resultados (criterio de este PT: no se deduce)", G["gasto"],
+                obs="Si se lo considera deducible, quitar esta fila: el quebranto aumenta en ese importe")
+    r_nd = fila("(+) Gastos no deducibles", G["noded_tot"])
+    r_ai = fila("(+/−) Ajuste por inflación impositivo — F.713: «Ajuste dinámico / estático»", G["aj_imp"])
+    r_qb = fila("(−) Quebrantos de ejercicios anteriores", -G["quebr"])
+    r_gn = fila("▸ GANANCIA NETA IMPONIBLE (conciliada)", f"=SUM(B{r_hist}:B{r_qb})", bold=True, fill=T)
+    fila("Control contra la sección 1 (debe ser 0)", f"=ROUND(B{r_gn}-B{r_gni},2)")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -2486,6 +2536,12 @@ def main(argv=None):
     try:
         if a.cof <= 0:
             raise EECCError("El coeficiente de reexpresión tiene que ser mayor a cero.")
+        if a.cof > 10 or a.cof < 0.5:
+            # Un coeficiente anual de inflación argentino ronda 1,1 a 3. Valores como 11685 son casi siempre un 1,1685
+            # al que se le perdió la coma decimal al cargarlo (en Notion: formato de número con separador de miles).
+            raise EECCError(f"El coeficiente de reexpresión ({a.cof:g}) está fuera de rango (se espera entre 0,5 y 10, "
+                            "por ejemplo 1,1685). Revisar el campo «Coeficiente» en Notion: si figura 11685 se perdió "
+                            "la coma decimal.")
         if a.nro_ejercicio > 1 and not a.eecc_anterior:
             raise EECCError("Falta el EECC del ejercicio anterior (PDF) para los comparativos.")
         cuentas, ss_info = leer_ss(a.ss_actual)
