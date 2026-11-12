@@ -204,9 +204,11 @@ RULES = [
 RULES_C = [(k, re.compile(p)) for k, p in RULES]
 
 
-def clasificar(nombre):
+def clasificar(nombre, extra=None):
+    """Rubro de una cuenta del sumas y saldos. `extra`: reglas que van antes que las generales
+    (se usan en asociaciones civiles, mutuales y fundaciones)."""
     n = nkey(nombre)
-    for k, rx in RULES_C:
+    for k, rx in list(extra or []) + RULES_C:
         if rx.search(n):
             return k
     return None
@@ -410,7 +412,7 @@ class Prior:
         if not self.text.strip():
             return
         for k, pat in self.LABELS.items():
-            self.v[k] = self._find(pat)
+            self.v[k] = self._find(pat, key=k)
         # notas: cuentas
         self.notas_ini = 0
         for i, nl in enumerate(self.nlines):
@@ -431,13 +433,16 @@ class Prior:
                     act += " " + nxt
             self.actividad = re.sub(r"\s+", " ", act)
 
-    def _find(self, pat, start=0):
+    def _toks(self, line, pos, key=None):
+        return tokens_after(line, pos)
+
+    def _find(self, pat, start=0, key=None):
         rx = re.compile(pat)
         for i in range(start, len(self.lines)):
             m = rx.search(self.nlines[i])
             if not m:
                 continue
-            toks = tokens_after(self.lines[i], m.end())
+            toks = self._toks(self.lines[i], m.end(), key)
             if toks:
                 return toks[0]
         return None
@@ -538,7 +543,7 @@ def calcular(a, cuentas, prior):
     # ── clasificación ──
     clas, desconocidas = [], []
     for nom, sal in cuentas:
-        k = clasificar(nom)
+        k = clasificar(nom, getattr(a, "reglas_extra", None))
         if k == "caja" and sal < -0.5:
             k = "prest"
         if k is None:
@@ -2237,14 +2242,15 @@ def caratula_lineas(a, X):
         ("Denominación", a.empresa),
         ("CUIT", fmt_cuit(a.cuit)),
         ("Domicilio legal", a.domicilio or ""),
-        ("Inscripción IGJ", a.matricula_igj or ""),
+        (reg_label(a) if getattr(a, "civil", False) else "Inscripción IGJ", a.matricula_igj or ""),
     ] + ([("Fecha de inscripción en IGJ", fecha_larga(datetime.strptime(a.fecha_inscripcion_igj[:10], "%Y-%m-%d").date()))]
          if getattr(a, "fecha_inscripcion_igj", "") else []) + [
         ("Actividad principal", X["actividad"] or ""),
         ("Ejercicio económico N°", str(a.nro_ejercicio)),
         ("Iniciado el", fecha_larga(X["inicio"])),
         ("Finalizado el", fecha_larga(X["cierre"])),
-        ("Capital suscripto e integrado", f"$ {fmt_ar(a.cap_nominal or X['I']['cap'] + X['aportes'])}"),
+    ] + ([] if getattr(a, "civil", False) else [
+        ("Capital suscripto e integrado", f"$ {fmt_ar(a.cap_nominal or X['I']['cap'] + X['aportes'])}")]) + [
         ("Normas contables", "RT 54 (T.O. RT 59) — FACPCE / RP N° 460/2024 CPCECABA"),
         ("Unidad de medida", f"Moneda homogénea al {X['cierre'].strftime('%d/%m/%Y')}"),
     ]
@@ -2330,7 +2336,7 @@ def escribir_pdf(path, a, X, S, notas):
         canv.drawString(1.5 * cm, h - 1.0 * cm, a.empresa)
         canv.setFont("Helvetica", 7.5)
         canv.drawRightString(w - 1.5 * cm, h - 1.0 * cm, f"CUIT {fmt_cuit(a.cuit)}"
-                             + (f" — Inscripción IGJ N° {a.matricula_igj}" if a.matricula_igj else ""))
+                             + (f" — {reg_label(a) if getattr(a, 'civil', False) else 'Inscripción IGJ'} N° {a.matricula_igj}" if a.matricula_igj else ""))
         canv.setStrokeColor(AZUL)
         canv.line(1.5 * cm, h - 1.2 * cm, w - 1.5 * cm, h - 1.2 * cm)
         canv.setFont("Helvetica", 6.5)
@@ -2453,6 +2459,487 @@ def escribir_pdf(path, a, X, S, notas):
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# Entidades civiles sin fines de lucro (asociaciones civiles, mutuales, fundaciones)
+# Modelo: Estado de Situación Patrimonial, Estado de Recursos y Gastos, Evolución del PN, Flujo de Efectivo,
+# Anexos A (bienes de uso), B (recursos ordinarios) y C (gastos ordinarios), Notas 1 a 4 e informe.
+# El motor de cálculo (calcular) es el mismo; acá cambia la clasificación, la lectura del EECC anterior y la
+# presentación.
+# ════════════════════════════════════════════════════════════════════════════
+def es_civil(tipo, empresa):
+    t, e = nkey(tipo or ""), nkey(empresa or "")
+    if re.search(r"cooperativa", t) or re.search(r"cooperativa", e):
+        return False
+    return bool(re.search(r"asociacion|mutual|fundacion", t) or
+                re.match(r"\s*(asociacion|mutual|fundacion|club)\b", e))
+
+
+def es_mutual(a):
+    return bool(re.search(r"mutual", nkey(a.tipo_societario or "") + " " + nkey(a.empresa or "")))
+
+
+def reg_label(a):
+    """Organismo de registro que va en la carátula y el encabezado."""
+    return "Matrícula INAES" if es_mutual(a) else "Inscripción IGJ"
+
+
+# Reglas que van antes que las generales (por ejemplo, «Cuota social» no es un gasto)
+RULES_CIVIL = [
+    ("cv", r"cuotas? (sociales? )?a cobrar|cuotas? (sociales? )?(adeudadas|atrasadas)|asociados? (deudores|a cobrar)|"
+           r"deudores por cuotas|cuentas? por cobrar (a )?asociados"),
+    ("od", r"fondos? (con )?destino|fondos? especificos?"),
+    ("gadm", r"subsidios? (otorgad|pagad|entregad)|pagos? de subsidios"),
+    ("ventas", r"^cuotas?\b.*(social|asociad|societ)|^cuotas? (de )?(ingreso|mensual)|ingresos? por cuotas|"
+               r"^recursos|donaciones? (recibid|percibid)|^donaciones$|^subsidios?( recibid| y donaciones)?$|"
+               r"aportes? (de )?(los )?asociados|contribuciones? (de )?asociados|^ingresos? (por )?(eventos|actividades)|"
+               r"^recupero de gastos"),
+]
+RULES_CIVIL_C = [(k, re.compile(p)) for k, p in RULES_CIVIL]
+
+NUM_RE_INT = re.compile(
+    r'\(\s*-?\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?\s*\)'
+    r'|-?\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?(?!\d)'
+    r'|-?\d{1,3}(?:\.\d{3})*,\d{1,2}(?!\d)'
+    r'|(?<![\w.,])-?\d{1,3}(?![\d.,])'
+    r'|(?<![\w.,])[-–](?![\w\d])'
+)
+
+
+def parse_num_ent(tok):
+    """Número en formato argentino, con o sin decimales: 2.861.743 / (1.627.606) / 53.735.244,58 / - / –"""
+    t = tok.strip()
+    if t in ("-", "–", ""):
+        return 0.0
+    neg = t.startswith("(") and t.endswith(")")
+    t = t.strip("()").strip()
+    if t.startswith("-"):
+        neg, t = True, t[1:]
+    try:
+        v = float(t.replace(".", "").replace(",", "."))
+    except ValueError:
+        return None
+    return -v if neg else v
+
+
+class PriorCivil(Prior):
+    """Lee el EECC anterior de una entidad civil (formato de la asociación / mutual), con importes enteros."""
+    LABELS = {k: r"(?!)" for k in Prior.LABELS}
+    LABELS.update({
+        "caja": r"caja y bancos",
+        "inv": r"^\s*inversiones",
+        "cv": r"cuentas por cobrar a asociados|cuentas por cobrar",
+        "oc": r"otros creditos",
+        "bc": r"bienes para comercializacion|bienes de cambio",
+        "bu": r"^\s*bienes de uso\W+anexo a|bienes de uso\W+anexo",
+        "ta": r"total del activo(?! (no )?corriente)",
+        "od": r"deudas\W+nota",
+        "tp": r"total del pasivo(?! (no )?corriente)(?! y)",
+        "pn": r"patrimonio neto\W+segun estado",
+        "ventas": r"total recursos ordinarios",
+        "gadm": r"total gastos ordinarios",
+        "rfyt": r"resultados financieros y por tenencia",
+        "ig": r"^\s*impuesto a las ganancias",
+        "res": r"superavit.{0,30}final del ejercicio|(deficit|resultado).{0,12}final del ejercicio",
+        "efe_ini": r"efectivo (y sus equivalentes )?al inicio",
+        "efe_cie": r"efectivo (y sus equivalentes )?al cierre",
+        "efe_op": r"flujo neto.*actividades operativas",
+        "efe_inv": r"flujo neto.*actividades de inversion",
+        "efe_fin": r"flujo neto.*actividades de financiacion",
+        "efe_dep": r"depreciacion de bienes de uso",
+    })
+
+    def _toks(self, line, pos, key=None):
+        rem = line[pos:]
+        rem = re.sub(r'^\s*[–-]\s*(?:nota\s*(?:n.{0,2})?\s*[\d.]*|anexo\s*\w+)', '', rem, flags=re.I)
+        rem = re.sub(r'^\s*[–-]\s*[A-Za-zÁ-ú][^\d(]*?(?=\s{2,}|$)', '', rem)
+        efe = bool(key and key.startswith("efe_"))
+        out = []
+        for m in NUM_RE_INT.finditer(rem):
+            t = m.group()
+            if t in ("-", "–"):
+                if efe:      # en los flujos hechos a mano el «-» suele ser el signo, en otra columna
+                    continue
+                out.append(0.0)
+                continue
+            v = parse_num_ent(t)
+            if v is not None:
+                out.append(abs(v) if efe else v)
+        if efe and not out and re.search(r'[-–]', rem):
+            out = [0.0]
+        return out
+
+    def __init__(self, path):
+        super().__init__(path)
+        self.civil = True
+        if not self.text.strip():
+            return
+        # los flujos del EECC anterior vienen sin signo claro: se resuelven para que sumen la variación del efectivo
+        ini, cie = self.v.get("efe_ini"), self.v.get("efe_cie")
+        if ini is not None and cie is not None:
+            var = cie - ini
+            ks = [k for k in ("efe_op", "efe_inv", "efe_fin") if self.v.get(k) is not None]
+            import itertools
+            mejor = None
+            for sg in itertools.product((1, -1), repeat=len(ks)):
+                tot = sum(s * self.v[k] for s, k in zip(sg, ks))
+                if mejor is None or abs(tot - var) < mejor[0]:
+                    mejor = (abs(tot - var), sg)
+            if mejor:
+                for s, k in zip(mejor[1], ks):
+                    self.v[k] = s * self.v[k]
+        self.anexo_recursos = self._leer_anexo("recursos ordinarios", "anexo b", col=2)
+        self.anexo_gastos = self._leer_anexo("gastos ordinarios", "anexo c", col=0)
+
+    def _leer_anexo(self, titulo, marca, col=0):
+        ini = None
+        for i, nl in enumerate(self.nlines):
+            if re.match(rf"\s*{titulo}\s*$", nl) and any(re.match(rf"\s*{marca}\s*$", x)
+                                                          for x in self.nlines[max(0, i - 4):i]):
+                ini = i
+                break
+        out = []
+        if ini is None:
+            return out
+        for i in range(ini + 1, min(ini + 45, len(self.lines))):
+            nl = self.nlines[i]
+            if re.search(r"notas a los estados", nl):
+                break
+            if re.match(r"\s*(detalle|total del|rubro|para fines|generales|saldo|correspondiente|presentado|expresado)", nl):
+                continue
+            m = re.match(r"\s*([a-z][^\d(\-–]*?)\s{2,}", nl)
+            if not m:
+                if NUM_RE_INT.search(self.lines[i]) and out:
+                    break          # renglón de totales (sin rótulo)
+                continue
+            lab = self.lines[i][m.start(1):m.end(1)].strip()
+            toks = self._toks(self.lines[i], m.end(), None)
+            if not toks:
+                continue
+            val = toks[col] if len(toks) > col + 1 else toks[0]
+            if abs(val) > 0.005:
+                out.append((lab, abs(val)))
+        return out
+
+    def cuenta(self, nombre):
+        """Saldo (columna actual) de una cuenta en las notas del EECC anterior; el rótulo puede estar en la línea
+        anterior a los importes."""
+        key = skey(nombre)
+        for i in range(self.notas_ini, len(self.lines)):
+            line = self.lines[i]
+            m = NUM_RE_INT.search(line)
+            label = skey(line[:m.start()] if m else line)
+            if label != key:
+                continue
+            toks = self._toks(line, m.start(), None) if m else []
+            if not toks:
+                for j in range(i + 1, min(i + 4, len(self.lines))):
+                    if not self.lines[j].strip():
+                        continue
+                    toks = self._toks(self.lines[j], 0, None)
+                    break
+            if toks:
+                return toks[0]
+        return None
+
+
+def armar_civil(a, X):
+    import copy
+    C, A, I, R = X["C"], X["A"], X["I"], X["R"]
+    comp = X["tiene_prior"]
+    hdr2 = ["Actual", "Anterior"] if comp else ["Actual"]
+    # Estados comunes al modelo de sociedades (flujo de efectivo y anexo de bienes de uso)
+    Xc = dict(X)
+    Xc["warn"] = []
+    S0, _n, _a, _nn = armar(a, Xc)
+    pick = lambda f: next((s for s in S0 if f(s)), None)
+    efe0 = pick(lambda s: s["key"] == "EFE")
+    bu0 = pick(lambda s: "BIENES DE USO" in s["title"])
+
+    both = lambda f: [f(C), f(A)] if comp else [f(C)]
+    deu = lambda D: D["dc"] + D["prest"] + D["rem"] + D["df"] + D["ds"] + D["od"]
+    S = []
+
+    # ── Estado de situación patrimonial ──
+    rows = [("sec", "ACTIVO", None), ("sub", "Activo corriente", None),
+            ("det", "Caja y bancos (Nota 3.1)", both(lambda D: D["caja"])),
+            ("det", "Inversiones (Nota 3.2)", both(lambda D: D["inv"])),
+            ("det", "Cuentas por cobrar a asociados (Nota 3.3)", both(lambda D: D["cv"])),
+            ("det", "Otros créditos (Nota 3.3.1)", both(lambda D: D["oc"])),
+            ("det", "Bienes para comercialización", both(lambda D: D["bc"])),
+            ("tot", "Total del activo corriente", both(lambda D: D["ac"])),
+            ("sub", "Activo no corriente", None),
+            ("det", "Bienes de uso (Anexo A)", both(lambda D: D["bu"])),
+            ("tot", "Total del activo no corriente", both(lambda D: D["anc"])),
+            ("grand", "TOTAL DEL ACTIVO", both(lambda D: D["ta"])),
+            ("blank", "", None),
+            ("sec", "PASIVO", None), ("sub", "Pasivo corriente", None),
+            ("det", "Deudas (Nota 3.4)", both(deu)),
+            ("det", "Fondos con destino específico", both(lambda D: 0.0)),
+            ("det", "Previsiones (Nota 3.5)", both(lambda D: 0.0)),
+            ("tot", "Total del pasivo corriente", both(deu)),
+            ("sub", "Pasivo no corriente", None),
+            ("tot", "Total del pasivo no corriente", both(lambda D: 0.0)),
+            ("grand", "TOTAL DEL PASIVO", both(deu)),
+            ("blank", "", None),
+            ("grand", "PATRIMONIO NETO (según el estado respectivo)", both(lambda D: D["pn"])),
+            ("grand", "TOTAL DEL PASIVO Y DEL PATRIMONIO NETO", both(lambda D: deu(D) + D["pn"]))]
+    S.append(dict(key="ESP", title="ESTADO DE SITUACIÓN PATRIMONIAL", cols=hdr2, rows=rows, land=False))
+
+    # ── Estado de recursos y gastos ──
+    amort_a = A.get("efe_dep", 0.0) if comp else 0.0
+    gast_tot = lambda D: D.get("costo", 0.0) + D.get("gcom", 0.0) + D.get("gadm", 0.0) + D.get("og", 0.0)
+    gen_cur = gast_tot(R) - X["amort_ej"]
+    gen_ant = gast_tot(A) - amort_a
+    z = [0.0, 0.0] if comp else [0.0]
+    pair = lambda c, p: [c, p] if comp else [c]
+    rows = [("sec", "RECURSOS Y GASTOS ORDINARIOS", None), ("sub", "Recursos ordinarios", None),
+            ("det", "Para fines generales (Anexo B)", pair(R["ventas"], A.get("ventas", 0.0))),
+            ("det", "Para fines específicos (Anexo B)", z),
+            ("det", "Diversos (Anexo B)", z),
+            ("tot", "Total recursos ordinarios", pair(R["ventas"], A.get("ventas", 0.0))),
+            ("sub", "Gastos ordinarios", None),
+            ("det", "Generales y específicos de sectores (Anexo C)", pair(-gen_cur, -gen_ant)),
+            ("det", "Depreciación de bienes de uso (Anexo A)", pair(-X["amort_ej"], -amort_a)),
+            ("tot", "Total gastos ordinarios", pair(-(gen_cur + X["amort_ej"]), -(gen_ant + amort_a)))]
+    if abs(R["oi"]) > 0.005 or (comp and abs(A.get("oi", 0.0)) > 0.005):
+        rows.append(("det", "Otros ingresos y egresos", pair(R["oi"], A.get("oi", 0.0))))
+    rows += [("det", "Resultados financieros y por tenencia (incluye RECPAM) (Nota 3.6)",
+              pair(R["rfyt"], A.get("rfyt", 0.0))),
+             ("tot", "Resultado neto antes del impuesto a las ganancias", pair(R["antes_ig"], A.get("antes_ig", 0.0))),
+             ("det", "Impuesto a las ganancias", pair(-R["ig"], -A.get("ig", 0.0))),
+             ("grand", "SUPERÁVIT / (DÉFICIT) FINAL DEL EJERCICIO", pair(R["res"], A.get("res", 0.0)))]
+    S.append(dict(key="ER", title="ESTADO DE RECURSOS Y GASTOS", cols=hdr2, rows=rows, land=False))
+
+    # ── Evolución del patrimonio neto ──
+    cols = ["Capital", "Ajuste de capital", "Total aportes de los asociados", "Superávit reservado",
+            "Superávit / (déficit) no asignados", "Total superávit / (déficit) acumulado",
+            "Total patrimonio neto actual"] + (["Total patrimonio neto anterior"] if comp else [])
+    if comp:
+        prior_first = a.nro_ejercicio - 1 == 1
+        a_res, a_pn = A.get("res", 0.0), A.get("pn", 0.0)
+        a_ini = 0.0 if prior_first else a_pn - a_res
+        a_apo = (a_pn - a_res) if prior_first else 0.0
+
+    def eep(cap, aj, resl, rna, ant=None):
+        v = [cap, aj, cap + aj, resl, rna, resl + rna, cap + aj + resl + rna]
+        return v + ([ant] if comp else [])
+
+    capi, aji = I["cap"] + I["apirr"], I["aj"]
+    rows = [("det", "Saldos al inicio del ejercicio", eep(capi, aji, I["resleg"], I["rna"], a_ini if comp else None)),
+            ("det", "Ajuste a resultados de ejercicios anteriores", eep(0, 0, 0, 0, 0.0 if comp else None)),
+            ("tot", "Saldos al inicio del ejercicio modificados",
+             eep(capi, aji, I["resleg"], I["rna"], a_ini if comp else None))]
+    if X["aportes"] or (comp and a_apo):
+        rows.append(("det", "Aportes de los asociados del ejercicio",
+                     eep(X["aportes"] - X["aportes_aj"], X["aportes_aj"], 0, 0, a_apo if comp else None)))
+    rows.append(("det", "Superávit / (déficit) final del ejercicio",
+                 eep(0, 0, 0, R["res"], A.get("res", 0.0) if comp else None)))
+    rows.append(("grand", "Saldos al cierre del ejercicio",
+                 eep(capi + X["aportes"] - X["aportes_aj"], aji + X["aportes_aj"], I["resleg"], I["rna"] + R["res"],
+                     A.get("pn", 0.0) if comp else None)))
+    S.append(dict(key="EEPN", title="ESTADO DE EVOLUCIÓN DEL PATRIMONIO NETO", cols=cols, rows=rows, land=True))
+
+    # ── Flujo de efectivo (método indirecto) ──
+    ren = {"Ganancia (Pérdida) del ejercicio": "Superávit (Déficit) del ejercicio",
+           "   (Aumento) Disminución en créditos por ventas": "   (Aumento) Disminución en cuentas por cobrar a asociados",
+           "   (Aumento) Disminución en bienes de cambio": "   (Aumento) Disminución en bienes para comercialización",
+           "Aportes de capital": "Aportes de los asociados",
+           "Aumento (Disminución) de deudas con socios": "Aumento (Disminución) de fondos con destino específico"}
+    efe = dict(efe0)
+    efe["rows"] = [(r[0], ren.get(r[1], r[1])) + tuple(r[2:]) for r in efe0["rows"]]
+    S.append(efe)
+
+    # ── Anexo A: bienes de uso ──
+    if bu0:
+        bu = dict(bu0)
+        bu["key"], bu["title"] = "Anexo A", "ANEXO A — BIENES DE USO"
+    else:
+        cb = ["Al inicio", "Altas", "Bajas", "Al cierre", "Acum. al inicio", "Tasa %", "Del ejercicio",
+              "Acum. al cierre", "Neto actual"] + (["Neto anterior"] if comp else [])
+        bu = dict(key="Anexo A", title="ANEXO A — BIENES DE USO", cols=cb, land=True,
+                  rows=[("det", "Sin bienes de uso", [0.0] * len(cb), {5: ""}), ("grand", "TOTALES", [0.0] * len(cb))])
+    S.append(bu)
+
+    # ── Anexo B: recursos ordinarios ──
+    prevB = {}
+    if comp:
+        for lab, val in X["prior"].anexo_recursos:
+            prevB[skey(lab)] = (lab, prevB.get(skey(lab), ("", 0.0))[1] + round(val * X["cof"], 2))
+    usados, rows = set(), []
+    ncol = 4 if comp else 3
+    tot = [0.0] * ncol
+    nombres = {}
+    for n, s_, k in X["cuentas"]:
+        if k == "ventas" and abs(s_) > 0.005:
+            nombres[n] = nombres.get(n, 0.0) - s_
+    for n, val in nombres.items():
+        ant = prevB.get(skey(n), (None, 0.0))[1]
+        if skey(n) in prevB:
+            usados.add(skey(n))
+        v = [val, 0.0, val] + ([ant] if comp else [])
+        rows.append(("det", n, v))
+        tot = [t + x for t, x in zip(tot, v)]
+    for kk, (lab, val) in prevB.items():
+        if kk not in usados:
+            rows.append(("det", lab, [0.0, 0.0, 0.0, val]))
+            tot[3] += val
+    if comp and not prevB:
+        tot[3] = A.get("ventas", 0.0)
+    rows.append(("grand", "TOTAL RECURSOS ORDINARIOS", tot))
+    S.append(dict(key="Anexo B", title="ANEXO B — RECURSOS ORDINARIOS",
+                  cols=["Para fines generales", "Para fines específicos", "Total actual"] +
+                       (["Total anterior"] if comp else []), rows=rows, land=False))
+
+    # ── Anexo C: gastos ordinarios ──
+    gastos = {}
+    for n, s_, k in X["cuentas"]:
+        if k in ("costo", "gcom", "gadm") and abs(s_) > 0.005:
+            gastos[n] = gastos.get(n, 0.0) + s_
+    if X["amort_ej"]:
+        gastos["Amortización bienes de uso"] = X["amort_ej"]
+    prev = {}
+    if comp:
+        for lab, val in X["prior"].anexo_gastos:
+            kk = skey(lab)
+            if re.search(r"amortizacion|depreciacion", kk):
+                kk = skey("Amortización bienes de uso")
+            prev[kk] = (lab, prev.get(kk, ("", 0.0))[1] + round(val * X["cof"], 2))
+        tot_ant = gast_tot(A)
+        if prev and abs(sum(v for _, v in prev.values()) - tot_ant) > max(2.0, tot_ant * 0.005):
+            X["warn"].append("El Anexo C del EECC anterior no suma igual que su estado de recursos y gastos; "
+                             "revisar la columna comparativa del anexo.")
+    usados, rows, tot = set(), [], [0.0] * (2 if comp else 1)
+    for n, val in gastos.items():
+        ant = 0.0
+        if skey(n) in prev:
+            usados.add(skey(n))
+            ant = prev[skey(n)][1]
+        v = [val] + ([ant] if comp else [])
+        rows.append(("det", n, v))
+        tot = [t + x for t, x in zip(tot, v)]
+    for kk, (lab, val) in prev.items():
+        if kk not in usados:
+            rows.append(("det", lab, [0.0, val]))
+            tot[1] += val
+    if comp and not prev:
+        tot[1] = gast_tot(A)
+    rows.append(("grand", "TOTAL GASTOS ORDINARIOS", tot))
+    S.append(dict(key="Anexo C", title="ANEXO C — GASTOS ORDINARIOS",
+                  cols=["Total actual"] + (["Total anterior"] if comp else []), rows=rows, land=False))
+
+    notas = armar_notas_civil(a, X)
+    return S, notas, {"bu": "A", "recursos": "B", "gastos": "C"}, {}
+
+
+def armar_notas_civil(a, X):
+    C, A, R = X["C"], X["A"], X["R"]
+    comp = X["tiene_prior"]
+    emp = a.empresa
+    prior = X["prior"]
+    N = []
+    ini = X["inicio"].strftime("%d/%m/%Y")
+    mutual = es_mutual(a)
+    N.append(("h1", "1. Objeto social y naturaleza de la entidad"))
+    org = "el Instituto Nacional de Asociativismo y Economía Social (INAES)" if mutual \
+        else "la Inspección General de Justicia (IGJ)"
+    reg = (f", habiendo sido inscripta bajo el N° {a.matricula_igj}" if a.matricula_igj else "")
+    N.append(("p", f"{emp} es una entidad civil sin fines de lucro, con personería jurídica otorgada por {org}{reg}. "
+                   "Sus fines y objetivos están especificados en su estatuto social." +
+                   (f" Su actividad principal es: {X['actividad']}." if X["actividad"] else "")))
+
+    N.append(("h1", "2. Bases de presentación de los estados contables"))
+    N.append(("h2", "2.1. Normas contables y unidad de medida"))
+    N.append(("p", "Los presentes estados contables están expresados en pesos en moneda homogénea de cierre y han "
+                   "sido preparados de conformidad con la Resolución Técnica N° 54 - T.O. RT 59 y modificatorias, "
+                   "emitida por la Federación Argentina de Consejos Profesionales de Ciencias Económicas (FACPCE), "
+                   "adoptada por la Resolución P. N° 460/2024 del Consejo Profesional de Ciencias Económicas de la "
+                   "Ciudad Autónoma de Buenos Aires (CPCECABA), y con la Resolución Técnica N° 11 (modificada por la "
+                   "RT 25) sobre normas particulares de exposición contable para entes sin fines de lucro. De "
+                   "acuerdo con la referida norma, la entidad reviste el carácter de entidad pequeña."))
+    N.append(("p", "Se reconocieron los efectos de la pérdida del poder adquisitivo de la moneda de acuerdo con las "
+                   "normas contables profesionales vigentes, utilizando las simplificaciones admitidas para "
+                   "entidades pequeñas: los resultados financieros y por tenencia, incluyendo el RECPAM, se exponen "
+                   "en una sola línea del estado de recursos y gastos."))
+    if a.nro_ejercicio <= 1:
+        N.append(("p", f"Por tratarse del primer ejercicio económico de la entidad, iniciado el {ini}, no se "
+                       "presenta información comparativa."))
+    else:
+        N.append(("p", "Con fines comparativos, los presentes estados contables incluyen cifras patrimoniales al "
+                       f"{X['cierre_ant'].strftime('%d/%m/%Y')} y de resultados, de evolución del patrimonio neto y "
+                       "de flujo de efectivo por el ejercicio finalizado en esa fecha, reexpresadas en moneda de "
+                       f"cierre del presente ejercicio (variación del índice utilizado: {(X['cof'] - 1) * 100:.2f} %)."
+                       .replace(".", ",", 1)))
+    N.append(("h2", "2.2. Criterios de exposición y medición"))
+    N.append(("p", "Caja y bancos, créditos y deudas en moneda nacional: se midieron a su valor nominal." +
+                   (" Los activos y pasivos en moneda extranjera se midieron al tipo de cambio de cierre."
+                    if X["moneda_ext"] else "")))
+    if X["bu"]:
+        N.append(("p", "Bienes de uso: se midieron a su costo de adquisición reexpresado, neto de las "
+                       "depreciaciones acumuladas calculadas por el método de la línea recta según la vida útil "
+                       "estimada. Su valor residual, en su conjunto, no excede su valor recuperable."))
+    N.append(("p", "Cuentas del estado de recursos y gastos: se computaron a su valor nominal sobre la base de su "
+                   "devengamiento mensual y se reexpresaron a moneda de cierre."))
+    N.append(("p", "Patrimonio neto: las cuentas componentes se encuentran expresadas en moneda homogénea. La cuenta "
+                   "«Capital» se expone a su valor nominal y su ajuste se expone en «Ajuste de capital»."))
+    N.append(("h2", "2.3. Estado de flujo de efectivo"))
+    N.append(("p", "El estado de flujo de efectivo fue confeccionado utilizando el método indirecto, considerando "
+                   "como efectivo el rubro Caja y bancos."))
+    N.append(("h2", "2.4. Estimaciones contables"))
+    N.append(("p", f"La preparación de estados contables requiere que el órgano de administración de {emp} realice "
+                   "estimaciones que afectan los importes de activos y pasivos registrados, la revelación de "
+                   "contingencias y los recursos y gastos del ejercicio. Los resultados reales futuros pueden "
+                   "diferir de las estimaciones realizadas."))
+
+    N.append(("h1", "3. Detalle de los principales rubros"))
+    cols = ["Actual", "Anterior"] if comp else ["Actual"]
+    signo = lambda k: -1 if RUBROS.get(k, ("A",))[0] == "P" else 1
+
+    def tabla(titulo, ks, tot_c, tot_a):
+        filas, sum_prev = [], 0.0
+        for n, s, kk in X["cuentas"]:
+            if kk not in ks:
+                continue
+            act = s * signo(kk)
+            ant = None
+            if comp:
+                pv = prior.cuenta(n)
+                ant = round(pv * X["cof"], 2) if pv is not None else 0.0
+                sum_prev += ant
+            if abs(act) > 0.005 or (ant and abs(ant) > 0.005):
+                filas.append((n, [act, ant] if comp else [act]))
+        if comp and abs(tot_a - sum_prev) > 1:
+            filas.append(("Saldos del ejercicio anterior en otras cuentas", [0.0, tot_a - sum_prev]))
+        if not filas:
+            filas.append(("Sin saldos", [0.0, 0.0] if comp else [0.0]))
+        N.append(("h2", titulo))
+        N.append(("table", dict(cols=cols, rows=filas, total=[tot_c, tot_a] if comp else [tot_c])))
+
+    deu_c, deu_a = (C["dc"] + C["prest"] + C["rem"] + C["df"] + C["ds"] + C["od"],
+                    A["dc"] + A["prest"] + A["rem"] + A["df"] + A["ds"] + A["od"])
+    tabla("3.1. Caja y bancos", ("caja",), C["caja"], A["caja"])
+    tabla("3.2. Inversiones", ("inv",), C["inv"], A["inv"])
+    tabla("3.3. Cuentas por cobrar a asociados", ("cv",), C["cv"], A["cv"])
+    tabla("3.3.1. Otros créditos", ("oc",), C["oc"], A["oc"])
+    tabla("3.4. Deudas", ("dc", "prest", "rem", "df", "ds", "od"), deu_c, deu_a)
+    N.append(("h2", "3.5. Previsiones"))
+    N.append(("p", "La entidad no registra previsiones al cierre del ejercicio."))
+    # 3.6 RECPAM
+    N.append(("h2", "3.6. Resultados financieros y por tenencia (incluido el RECPAM)"))
+    N.append(("table", dict(cols=cols, rows=[("Resultados por exposición a cambios en el poder adquisitivo de la "
+                                              "moneda (RECPAM), intereses y diferencia de cambio netos",
+                                              [R["rfyt"], A.get("rfyt", 0.0)] if comp else [R["rfyt"]])],
+                            total=[R["rfyt"], A.get("rfyt", 0.0)] if comp else [R["rfyt"]])))
+
+    N.append(("h1", "4. Fuentes de financiación"))
+    if abs(C["prest"]) < 0.005:
+        N.append(("p", "En el transcurso del presente ejercicio las operaciones de la entidad fueron financiadas "
+                       "con fondos propios."))
+    else:
+        N.append(("p", "En el transcurso del presente ejercicio las operaciones de la entidad fueron financiadas "
+                       f"con fondos propios y con préstamos de terceros por $ {fmt_ar(C['prest'])}."))
+    return N
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # Main
 # ════════════════════════════════════════════════════════════════════════════
 def main(argv=None):
@@ -2488,10 +2975,12 @@ def main(argv=None):
             raise EECCError("El coeficiente de reexpresión tiene que ser mayor a cero.")
         if a.nro_ejercicio > 1 and not a.eecc_anterior:
             raise EECCError("Falta el EECC del ejercicio anterior (PDF) para los comparativos.")
+        a.civil = es_civil(a.tipo_societario, a.empresa)
+        a.reglas_extra = RULES_CIVIL_C if a.civil else None
         cuentas, ss_info = leer_ss(a.ss_actual)
         a.ss_ajustado = bool(ss_info["ajustado"])
         a.ss_solo_ajustado = bool(ss_info["solo_ajustado"])
-        prior = Prior(a.eecc_anterior if a.nro_ejercicio > 1 else None)
+        prior = (PriorCivil if a.civil else Prior)(a.eecc_anterior if a.nro_ejercicio > 1 else None)
         if a.nro_ejercicio > 1 and not prior.text.strip():
             raise EECCError("No pude leer el texto del EECC anterior (¿PDF escaneado?).")
         if a.nro_ejercicio > 1 and prior.v.get("pn") is None:
@@ -2511,14 +3000,15 @@ def main(argv=None):
                              "esos saldos (como si el ajuste ya estuviera registrado en Xubio). Para que partan de los "
                              "saldos de libros, exportá también la columna «Saldo Final».")
         X["warn"] += G["warn"]
-        S, notas, anx, nota_n = armar(a, X)
+        S, notas, anx, nota_n = armar_civil(a, X) if a.civil else armar(a, X)
         escribir_xlsx(a.output, a, X, S, notas)
         xubio_path = a.xubio or re.sub(r"\.xlsx$", "", a.output) + "_xubio.xlsx"
         escribir_xubio(xubio_path, a, X)
         pdf_path = a.pdf or re.sub(r"\.xlsx$", "", a.output) + ".pdf"
         escribir_pdf(pdf_path, a, X, S, notas)
-        meta = dict(notas_rango=f"1 a {4 if X['C']['pn'] < 0 else 3}",
-                    anexos_rango=("I" if len(anx) == 1 else f"I a {list(anx.values())[-1]}"),
+        meta = dict(notas_rango=f"1 a {4 if (X['C']['pn'] < 0 or a.civil) else 3}",
+                    anexos_rango=("A a C" if a.civil else "I" if len(anx) == 1 else f"I a {list(anx.values())[-1]}"),
+                    civil=bool(a.civil),
                     advertencias=X["warn"], pdf=pdf_path, xubio=xubio_path)
         with open(re.sub(r"\.xlsx$", "", a.output) + ".meta.json", "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)

@@ -145,7 +145,8 @@ async def generar(
                           fecha_cierre.strip(), sipa_monto,
                           notas_rango=meta.get("notas_rango", "1 a 3"),
                           anexos_rango=meta.get("anexos_rango", "I a II"),
-                          tipo_societario=tipo_societario)
+                          tipo_societario=tipo_societario,
+                          civil=bool(meta.get("civil")))
             if lo:
                 _libreoffice_convert(lo, informe_filled, tmp, informe_pdf)
             else:
@@ -413,7 +414,7 @@ def _fill_informe(template_path: str, out_path: str,
                   empresa: str, cuit: str, domicilio: str, matricula_igj: str,
                   fecha_cierre: str, sipa_monto: str,
                   notas_rango: str = "1 a 3", anexos_rango: str = "I a II",
-                  tipo_societario: str = ""):
+                  tipo_societario: str = "", civil: bool = False):
     """Rellena el template del Informe de Auditoría con los datos del cliente."""
     from docx import Document
 
@@ -448,10 +449,12 @@ def _fill_informe(template_path: str, out_path: str,
     }
 
     doc = Document(template_path)
-    if _es_sa(tipo_societario, empresa):
+    if civil:
+        _adaptar_informe_civil(doc, tipo_societario, empresa)
+    if _es_sa(tipo_societario, empresa) or civil:
         _agregar_seccion_sa(doc)
         for para in doc.paragraphs:          # destinatarios: en las S.A. el informe va al Directorio
-            if para.text.strip() == "Señores Gerentes":
+            if para.text.strip() == "Señores Gerentes" and not civil:
                 for run in para.runs:
                     run.text = run.text.replace("Gerentes", "Directivos")
                 break
@@ -463,6 +466,36 @@ def _fill_informe(template_path: str, out_path: str,
                 for para in cell.paragraphs:
                     _replace_para(para, replacements)
     doc.save(out_path)
+
+
+def _reemplazar_texto(para, viejo: str, nuevo: str):
+    """Reemplaza texto en un párrafo aunque esté partido en varios runs (el formato queda en el primer run)."""
+    if viejo not in para.text:
+        return
+    for run in para.runs:
+        if viejo in run.text:
+            run.text = run.text.replace(viejo, nuevo)
+            return
+    texto = para.text.replace(viejo, nuevo)
+    for i, run in enumerate(para.runs):
+        run.text = texto if i == 0 else ""
+
+
+def _adaptar_informe_civil(doc, tipo: str, empresa: str):
+    """Entidades civiles (asociación civil, mutual, fundación): el informe va al Consejo Directivo y el estado de
+    resultados se llama «de recursos y gastos» (modelo de las asociaciones del estudio)."""
+    mutual = "MUTUAL" in ((tipo or "") + " " + (empresa or "")).upper()
+    for para in doc.paragraphs:
+        t = para.text.strip()
+        if t == "Señores Gerentes":
+            _reemplazar_texto(para, "Señores Gerentes", "Señores del Consejo Directivo de")
+        elif t.startswith("Matricula IGJ") and mutual:
+            _reemplazar_texto(para, "Matricula IGJ", "Matrícula INAES")
+        else:
+            _reemplazar_texto(para, "los estados de resultados, de evolución del patrimonio neto y de flujo de "
+                                    "efectivo", "los estados de recursos y gastos, de evolución del patrimonio neto "
+                                                "y de flujo de efectivo")
+            _reemplazar_texto(para, "sus resultados,", "sus recursos y gastos,")
 
 
 def _es_sa(tipo: str, empresa: str) -> bool:
